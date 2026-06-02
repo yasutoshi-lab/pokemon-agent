@@ -65,6 +65,36 @@ pokemon-agent serve --rom path/to/pokemon_red.gb
   WebSocket:  ws://localhost:8765/ws
 ```
 
+### Autopilot — let it play itself
+
+The server is a passive API — it holds the emulator but does not play. To make
+the game play autonomously (the "stream it 24/7" mode), run the built-in
+autopilot in a second process:
+
+```bash
+# 1. start the server (terminal A)
+pokemon-agent serve --rom path/to/pokemon_red.gb
+
+# 2. start the autopilot brain (terminal B)
+export OPENROUTER_API_KEY=sk-...        # or POKEMON_LLM_API_KEY
+pokemon-agent play                       # OBSERVE -> THINK (vision LLM) -> ACT loop
+```
+
+The autopilot idles until you press **START** on the dashboard (it polls
+`/control`). **START / PAUSE / STOP** on the page drive it live; it narrates
+every turn to the Field Log via `/event` and updates objectives via
+`/objectives`. LLM config (env, all optional — defaults to OpenRouter):
+
+| Var | Default |
+|-----|---------|
+| `POKEMON_LLM_BASE_URL` | `https://openrouter.ai/api/v1` |
+| `POKEMON_LLM_API_KEY` | `$OPENROUTER_API_KEY` |
+| `POKEMON_LLM_MODEL` | `anthropic/claude-sonnet-4.5` (must be vision-capable) |
+
+Install the autopilot deps with `pip install pokemon-agent[autopilot]` (adds
+`openai` + `requests`). Any AI agent (Hermes, your own script) can drive the
+game the same way over HTTP instead — the autopilot is just the bundled brain.
+
 ### Play from Any Agent
 
 ```bash
@@ -186,6 +216,8 @@ The skill teaches Hermes battle strategy, exploration patterns, team management,
 | `/map/ascii` | GET | Ground-truth ASCII walkability map (`@`/`.`/`#`) |
 | `/action` | POST | Execute game actions |
 | `/event` | POST | Push agent narration (reasoning/decision/key_moment/alert) to the dashboard |
+| `/objectives` | GET/POST | Read or replace the dashboard objective list (dynamic goals) |
+| `/control` | GET/POST | Read or set the autopilot run state (running/paused/stopped) |
 | `/save` | POST | Save emulator state |
 | `/load` | POST | Load emulator state |
 | `/saves` | GET | List saved states |

@@ -91,6 +91,13 @@ def cmd_info(args):
     print(f"Detected as:  {game_type}")
 
 
+def cmd_play(args):
+    """Run the standalone autopilot loop (LLM plays the game)."""
+    from pokemon_agent.autopilot import run_autopilot
+    server = f"http://{args.host}:{args.port}"
+    run_autopilot(server=server, model=args.model, turn_delay=args.turn_delay)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="pokemon-agent",
@@ -123,12 +130,23 @@ def main():
     info_p = sub.add_parser("info", help="Show ROM information")
     info_p.add_argument("--rom", required=True, help="Path to Pokemon ROM file")
 
+    # --- play (autopilot) ---
+    play_p = sub.add_parser("play", help="Run the LLM autopilot against a running server")
+    play_p.add_argument("--host", default="localhost", help="Server host (default: localhost)")
+    play_p.add_argument("--port", type=int, default=8765, help="Server port (default: 8765)")
+    play_p.add_argument("--model", default=None,
+                        help="LLM model (default: $POKEMON_LLM_MODEL or anthropic/claude-sonnet-4.5)")
+    play_p.add_argument("--turn-delay", type=float, default=1.5,
+                        help="Seconds between turns (default: 1.5)")
+
     args = parser.parse_args()
 
     if args.command == "serve":
         cmd_serve(args)
     elif args.command == "info":
         cmd_info(args)
+    elif args.command == "play":
+        cmd_play(args)
     else:
         parser.print_help()
         sys.exit(1)

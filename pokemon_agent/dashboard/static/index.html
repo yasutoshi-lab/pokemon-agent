@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=9">
+    <link rel="stylesheet" href="style.css?v=10">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23142d14'/><rect x='3' y='3' width='10' height='10' fill='%238bac0f'/><rect x='6' y='6' width='4' height='4' fill='%23142d14'/></svg>">
 </head>
 <body>
@@ -21,6 +21,12 @@
             <span class="brand-sub" id="gameName">Red / Field Log</span>
         </div>
         <nav class="run-meta">
+            <div class="controls" id="controls">
+                <button class="ctrl-btn start" id="btnStart" title="Start / resume autopilot">▶ START</button>
+                <button class="ctrl-btn pause" id="btnPause" title="Pause autopilot">❚❚ PAUSE</button>
+                <button class="ctrl-btn stop" id="btnStop" title="Stop autopilot">■ STOP</button>
+                <span class="ctrl-state" id="ctrlState">stopped</span>
+            </div>
             <div class="meta-cell">
                 <span class="meta-k">RUN</span>
                 <span class="meta-v" id="metaRun">#001</span>
@@ -120,18 +126,7 @@
             <div class="inst">
                 <div class="inst-head">OBJECTIVES</div>
                 <ul class="objectives" id="objectivesList">
-                    <li class="obj obj-primary" data-key="primary">
-                        <span class="obj-tier">P</span>
-                        <span class="obj-text">Deliver Oak's Parcel · get Pokédex</span>
-                    </li>
-                    <li class="obj obj-secondary" data-key="secondary">
-                        <span class="obj-tier">S</span>
-                        <span class="obj-text">Reach Pewter City · Boulder Badge</span>
-                    </li>
-                    <li class="obj obj-tertiary" data-key="tertiary">
-                        <span class="obj-tier">T</span>
-                        <span class="obj-text">Catch a Grass/Electric type</span>
-                    </li>
+                    <li class="obj-loading">loading objectives…</li>
                 </ul>
             </div>
 
@@ -171,6 +166,6 @@
     </footer>
 
 </div>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

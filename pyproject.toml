@@ -37,6 +37,7 @@ dependencies = [
 pyboy = ["pyboy>=2.0.0"]
 pygba = ["pygba>=0.1.0"]
 dashboard = ["aiofiles>=23.0.0"]
+autopilot = ["openai>=1.40", "requests>=2.28"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -44,7 +45,7 @@ dev = [
     "ruff>=0.1.0",
 ]
 all = [
-    "pokemon-agent[pyboy,dashboard]",
+    "pokemon-agent[pyboy,dashboard,autopilot]",
 ]
 
 [project.urls]

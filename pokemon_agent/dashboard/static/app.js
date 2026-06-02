@@ -134,6 +134,37 @@
         updateTension(state);
     }
 
+    // ---- objectives (dynamic) ----
+    var TIER_LABEL = { primary:'P', secondary:'S', tertiary:'T' };
+    function renderObjectives(list){
+        var ul=$('objectivesList'); ul.innerHTML='';
+        if(!list.length){ var li=document.createElement('li'); li.className='obj-loading'; li.textContent='no objectives set'; ul.appendChild(li); return; }
+        list.forEach(function(o){
+            var li=document.createElement('li');
+            li.className='obj obj-'+(o.tier||'tertiary')+(o.done?' done':'');
+            var t=document.createElement('span'); t.className='obj-tier'; t.textContent=TIER_LABEL[o.tier]||'•';
+            var x=document.createElement('span'); x.className='obj-text'; x.textContent=o.text||'';
+            li.appendChild(t); li.appendChild(x); ul.appendChild(li);
+        });
+    }
+
+    // ---- control (run state) ----
+    function renderControl(state){
+        $('ctrlState').textContent=state;
+        $('btnStart').classList.toggle('active', state==='running');
+        $('btnPause').classList.toggle('active', state==='paused');
+        $('btnStop').classList.toggle('active', state==='stopped');
+        $('btnStart').disabled = (state==='running');
+        $('btnPause').disabled = (state!=='running');
+        $('btnStop').disabled  = (state==='stopped');
+    }
+    function setControl(state){
+        fetch(baseURL+'/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({state:state})})
+            .then(function(r){ return r.json(); })
+            .then(function(d){ if(d&&d.state) renderControl(d.state); })
+            .catch(function(){});
+    }
+
     function renderBadges(count, list){
         var row=$('badgesRow'); row.innerHTML='';
         for(var i=0;i<8;i++){
@@ -252,6 +283,8 @@
             replaying=false;
             return;
         }
+        if(type==='objectives'){ renderObjectives(msg.objectives||[]); return; }
+        if(type==='control'){ renderControl(msg.state||'stopped'); return; }
         if(type==='action'){
             renderEvent(msg);
             if(msg.state_after){ var j=JSON.stringify(msg.state_after); if(j!==lastStateJSON){ lastStateJSON=j; renderStats(msg.state_after); } }
@@ -284,6 +317,9 @@
         $('togGame').addEventListener('click', function(){ gridMode=false; setTog(); poll(); });
         $('togGrid').addEventListener('click', function(){ gridMode=true; setTog(); refreshGrid(); });
         $('btnClearLog').addEventListener('click', function(){ $('logContainer').innerHTML=''; });
+        $('btnStart').addEventListener('click', function(){ setControl('running'); });
+        $('btnPause').addEventListener('click', function(){ setControl('paused'); });
+        $('btnStop').addEventListener('click', function(){ setControl('stopped'); });
         var box=$('logContainer');
         box.addEventListener('scroll', function(){ autoScroll = box.scrollTop+box.clientHeight >= box.scrollHeight-30; });
     }
@@ -298,6 +334,9 @@
         fetch(baseURL+'/').then(function(r){return r.json();}).then(function(d){
             if(d.game) $('gameName').textContent=(d.game==='red'?'Red':d.game)+' / Field Log';
         }).catch(function(){});
+        // initial objectives + control state (WS also pushes these on connect)
+        fetch(baseURL+'/objectives').then(function(r){return r.json();}).then(function(d){ renderObjectives((d&&d.objectives)||[]); }).catch(function(){});
+        fetch(baseURL+'/control').then(function(r){return r.json();}).then(function(d){ renderControl((d&&d.state)||'stopped'); }).catch(function(){});
         initToggles();
         connect();
         poll(); pollTimer=setInterval(poll, POLL_MS);

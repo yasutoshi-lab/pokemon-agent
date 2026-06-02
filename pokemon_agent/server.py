@@ -53,6 +53,23 @@ class SaveRequest(BaseModel):
     name: str
 
 
+class Objective(BaseModel):
+    """A single objective shown on the dashboard."""
+    tier: str            # "primary" | "secondary" | "tertiary"
+    text: str
+    done: bool = False
+
+
+class ObjectivesRequest(BaseModel):
+    """Body for POST /objectives — replace the full objective list."""
+    objectives: list[Objective]
+
+
+class ControlRequest(BaseModel):
+    """Body for POST /control — set the autopilot run state."""
+    state: str           # "running" | "paused" | "stopped"
+
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -62,6 +79,17 @@ _emulator = None          # Emulator instance
 _reader = None            # GameMemoryReader subclass instance
 _start_time: float = 0.0
 _loop: Optional[asyncio.AbstractEventLoop] = None
+
+# Dynamic objectives shown on the dashboard (default = Kanto opening goals).
+_objectives: list = [
+    {"tier": "primary", "text": "Deliver Oak's Parcel · get Pokédex", "done": False},
+    {"tier": "secondary", "text": "Reach Pewter City · Boulder Badge", "done": False},
+    {"tier": "tertiary", "text": "Catch a Grass/Electric type", "done": False},
+]
+
+# Autopilot run state. "stopped" (default) | "running" | "paused".
+# A standalone `pokemon-agent play` loop reads this and only acts when running.
+_control_state: str = "stopped"
 
 # WebSocket clients
 _ws_clients: Set[WebSocket] = set()
@@ -453,6 +481,48 @@ async def push_event(req: EventRequest):
     return {"success": True, "broadcast_to": len(_ws_clients)}
 
 
+@app.get("/objectives")
+async def get_objectives():
+    """Current objective list (primary/secondary/tertiary + done flags)."""
+    return {"objectives": _objectives}
+
+
+@app.post("/objectives")
+async def set_objectives(req: ObjectivesRequest):
+    """Replace the full objective list and broadcast it to the dashboard.
+
+    The player (agent or autopilot) sets real goals here so the dashboard
+    reflects the actual plan instead of static placeholder text.
+    """
+    global _objectives
+    _objectives = [o.model_dump() for o in req.objectives]
+    await broadcast({"type": "objectives", "objectives": _objectives})
+    return {"success": True, "objectives": _objectives}
+
+
+@app.get("/control")
+async def get_control():
+    """Current autopilot run state: running | paused | stopped."""
+    return {"state": _control_state}
+
+
+@app.post("/control")
+async def set_control(req: ControlRequest):
+    """Set the autopilot run state (drives the Start/Pause/Stop buttons).
+
+    A standalone `pokemon-agent play` loop polls this and only takes actions
+    while the state is "running". This endpoint is the wiring behind the
+    dashboard's control buttons; it does not itself drive the emulator.
+    """
+    global _control_state
+    valid = {"running", "paused", "stopped"}
+    if req.state not in valid:
+        raise HTTPException(status_code=400, detail=f"state must be one of {sorted(valid)}")
+    _control_state = req.state
+    await broadcast({"type": "control", "state": _control_state})
+    return {"success": True, "state": _control_state}
+
+
 @app.post("/action")
 async def execute_actions(req: ActionRequest):
     """Execute a sequence of game actions."""
@@ -628,6 +698,9 @@ async def websocket_endpoint(ws: WebSocket):
                 "type": "replay",
                 "events": list(_event_history),
             })
+        # Send current objectives + control state so the panel + buttons sync.
+        await ws.send_json({"type": "objectives", "objectives": _objectives})
+        await ws.send_json({"type": "control", "state": _control_state})
         # Keep alive — wait for client messages (or disconnect)
         while True:
             data = await ws.receive_text()
