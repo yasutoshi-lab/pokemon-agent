@@ -120,7 +120,21 @@ async def broadcast(event: dict):
 def _get_state_dict() -> dict:
     """Build full game state from the memory reader."""
     from pokemon_agent.state.builder import build_game_state
-    return build_game_state(_reader)
+    state = build_game_state(_reader)
+    # Attach the on-screen walkability grid for Red/Blue (overworld tilesets).
+    # This is ground-truth collision read from RAM — far more reliable than
+    # inferring walkability from pixels.
+    try:
+        if _config and _config.game_type == "red" and not (
+            state.get("battle") or {}
+        ).get("in_battle"):
+            from pokemon_agent.collision import build_collision_grid, render_ascii_map
+            col = build_collision_grid(_reader.emu)
+            col["ascii"] = render_ascii_map(col, legend=True)
+            state["collision"] = col
+    except Exception as exc:  # noqa: BLE001
+        state["collision_error"] = f"{type(exc).__name__}: {exc}"
+    return state
 
 
 def _get_screenshot_bytes() -> bytes:
@@ -340,6 +354,32 @@ async def get_state():
         raise HTTPException(status_code=500, detail=f"Error reading state: {e}")
 
 
+@app.get("/screenshot/grid")
+async def screenshot_grid(scale: int = 4):
+    """Current frame with a labelled A1..J9 movement grid drawn on top.
+
+    The grid divides the 160x144 screen into the game's 10x9 walkable
+    block layout. The player is always in cell E5 (marked). This gives a
+    vision model discrete, nameable coordinates to plan movement with.
+    """
+    _ensure_emulator()
+    try:
+        from pokemon_agent.overlay import render_grid_overlay_bytes
+
+        def _grid_png() -> bytes:
+            screen = _emulator.get_screen()
+            from PIL import Image
+            if not isinstance(screen, Image.Image):
+                import numpy as np  # noqa: F401
+                screen = Image.fromarray(screen)
+            return render_grid_overlay_bytes(screen, scale=scale)
+
+        png_bytes = await _run_sync(_grid_png)
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Grid screenshot error: {e}")
+
+
 @app.get("/screenshot")
 async def screenshot():
     """Current emulator frame as PNG image."""
@@ -468,6 +508,24 @@ async def list_saves():
         return {"saves": saves}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing saves: {e}")
+
+
+@app.get("/map/ascii")
+async def map_ascii():
+    """The current on-screen walkability grid as an ASCII map (text/plain).
+
+    @ = player (E5), . = walkable, # = blocked. Read from RAM collision data,
+    so it is ground truth — not a guess from pixels.
+    """
+    _ensure_emulator()
+    try:
+        def _ascii() -> str:
+            from pokemon_agent.collision import build_collision_grid, render_ascii_map
+            return render_ascii_map(build_collision_grid(_reader.emu), legend=True)
+        text = await _run_sync(_ascii)
+        return Response(content=text, media_type="text/plain")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ASCII map error: {e}")
 
 
 @app.get("/minimap")
