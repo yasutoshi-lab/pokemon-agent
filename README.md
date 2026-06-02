@@ -65,6 +65,29 @@ pokemon-agent serve --rom path/to/pokemon_red.gb
   WebSocket:  ws://localhost:8765/ws
 ```
 
+### Game sessions — new game / load game
+
+A *game session* is one named playthrough that binds three things together:
+the **Hermes brain** (its session id, so memory carries across turns), the
+**emulator save-states** (game progress), and **objectives + milestones +
+stats** — all persisted under `<data_dir>/games/<id>/`.
+
+From the dashboard GAME panel: **+ NEW** starts a fresh game (resets the
+emulator to a clean boot + new manifest + new Hermes brain), **LOAD** lists
+past sessions and restores one — its latest save-state *and* the same Hermes
+session it was played with. Or via the API:
+
+```bash
+curl -X POST localhost:8765/games/new -d '{"name":"Nuzlocke run"}'   # new game
+curl localhost:8765/games                                            # list sessions
+curl -X POST localhost:8765/games/<id>/load                          # load one
+curl localhost:8765/games/current                                    # active session
+```
+
+Saves, objectives, milestones, and stats are automatically scoped to the
+active session, and the autopilot binds to it — so loading a game resumes
+exactly where that run (and its Hermes memory) left off.
+
 ### Autopilot — Hermes Agent plays itself
 
 The server is a passive API — it holds the emulator but does not play. To make
@@ -215,6 +238,12 @@ The skill teaches Hermes battle strategy, exploration patterns, team management,
 | `/event` | POST | Push agent narration (reasoning/decision/key_moment/alert) to the dashboard |
 | `/objectives` | GET/POST | Read or replace the dashboard objective list (dynamic goals) |
 | `/control` | GET/POST | Read or set the autopilot run state (running/paused/stopped) |
+| `/games` | GET | List all game sessions + which is active |
+| `/games/new` | POST | Start a new game (fresh boot + new session) |
+| `/games/{id}/load` | POST | Load a game session (restore save + Hermes brain) |
+| `/games/{id}/hermes` | POST | Bind the Hermes session id to a game |
+| `/games/{id}` | DELETE | Delete a game session and its saves |
+| `/games/current` | GET | The active game session summary |
 | `/save` | POST | Save emulator state |
 | `/load` | POST | Load emulator state |
 | `/saves` | GET | List saved states |

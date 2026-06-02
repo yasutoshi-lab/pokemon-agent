@@ -262,7 +262,25 @@ body::before {
 .inst-head {
     font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .18em;
     color: var(--dmg-bright); margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
 }
+.inst-head .ghost-btn { margin-left: auto; padding: 2px 7px; font-size: 9px; }
+.inst-head .ghost-btn + .ghost-btn { margin-left: 4px; }
+.active-game {
+    font-family: var(--mono); font-size: 12px; color: var(--paper);
+    line-height: 1.4; word-break: break-word;
+}
+.active-game .ag-sub { color: var(--paper-faint); font-size: 10px; display: block; margin-top: 2px; }
+.game-list { list-style: none; margin-top: 10px; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+.game-list .gl-item {
+    display: flex; flex-direction: column; gap: 2px; padding: 7px 8px;
+    background: var(--ink-3); border: 1px solid var(--hair); border-radius: var(--r);
+    cursor: pointer;
+}
+.game-list .gl-item:hover { border-color: var(--dmg-mid); }
+.game-list .gl-item.active { border-color: var(--dmg-bright); }
+.gl-name { font-family: var(--mono); font-size: 11px; color: var(--paper); }
+.gl-meta { font-family: var(--mono); font-size: 9px; color: var(--paper-faint); }
 
 /* badges */
 .badges { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }

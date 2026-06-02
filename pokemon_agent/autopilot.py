@@ -110,7 +110,8 @@ class HermesDriver:
         self.turn_delay = turn_delay
         self.save_every = save_every
         self.turn_timeout = turn_timeout
-        self.session_id: Optional[str] = None
+        self.game_id: Optional[str] = None        # active game session id
+        self.session_id: Optional[str] = None     # bound Hermes session id
         self.turn = 0
 
     # --- server helpers ---
@@ -123,11 +124,39 @@ class HermesDriver:
         except Exception:
             return "stopped"
 
+    def sync_active_game(self) -> None:
+        """Read the active game session and adopt its id + Hermes brain id.
+
+        This is how 'load game' on the dashboard takes effect: the driver
+        resumes the SAME Hermes session that game was played with, and scopes
+        its work to that game.
+        """
+        try:
+            cur = self._get("/games/current").json().get("active")
+        except Exception:
+            cur = None
+        if not cur:
+            self.game_id = None
+            return
+        if cur.get("id") != self.game_id:
+            # switched to a different game (new or loaded) — adopt its brain
+            self.game_id = cur.get("id")
+            self.session_id = cur.get("hermes_session_id")  # may be None for a new game
+            print(f"[driver] active game: {self.game_id} (hermes={self.session_id})")
+
     def event(self, **kw):
         try:
             requests.post(self.server + "/event", json=kw, timeout=15)
         except Exception:
             pass
+
+    def bind_hermes(self):
+        if self.game_id and self.session_id:
+            try:
+                requests.post(f"{self.server}/games/{self.game_id}/hermes",
+                              json={"hermes_session_id": self.session_id}, timeout=15)
+            except Exception:
+                pass
 
     # --- one turn = one Hermes invocation ---
     def step(self) -> None:
@@ -190,10 +219,12 @@ class HermesDriver:
         # Capture the session id from the first run so later turns resume it.
         if self.session_id is None:
             m = re.search(r"hermes --resume (\S+)", stdout) or \
-                re.search(r"Session:\s*(\S+)", stdout)
+                re.search(r"Session:\s*(\S+)", stdout) or \
+                re.search(r"session_id:\s*(\S+)", stdout)
             if m:
                 self.session_id = m.group(1)
                 print(f"[driver] Hermes session: {self.session_id}")
+                self.bind_hermes()   # persist brain id into the game manifest
                 self.event(type="key_moment",
                            description="Hermes session started",
                            category="milestone")
@@ -203,9 +234,10 @@ class HermesDriver:
     def run(self):
         model_note = self.model or "config default"
         print(f"[driver] Hermes-driven autopilot. server={self.server} model={model_note}")
-        print("[driver] waiting for control=running (dashboard Start button)…")
-        self.event(type="alert", text="Hermes online — press START to play.")
+        print("[driver] waiting for control=running + an active game…")
+        self.event(type="alert", text="Hermes online — start or load a game, then press START.")
         idle_logged = False
+        no_game_logged = False
         while True:
             st = self.control_state()
             if st == "stopped":
@@ -218,6 +250,15 @@ class HermesDriver:
                 time.sleep(1.5)
                 continue
             idle_logged = False
+            self.sync_active_game()
+            if not self.game_id:
+                if not no_game_logged:
+                    print("[driver] running but no active game — start/load one on the dashboard.")
+                    self.event(type="alert", text="No active game — click New Game or load one.")
+                    no_game_logged = True
+                time.sleep(2)
+                continue
+            no_game_logged = False
             self.step()
             time.sleep(self.turn_delay)
 

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=10">
+    <link rel="stylesheet" href="style.css?v=11">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23142d14'/><rect x='3' y='3' width='10' height='10' fill='%238bac0f'/><rect x='6' y='6' width='4' height='4' fill='%23142d14'/></svg>">
 </head>
 <body>
@@ -116,6 +116,16 @@
         <!-- RIGHT: instruments -->
         <aside class="col col-instruments">
 
+            <!-- Game session -->
+            <div class="inst">
+                <div class="inst-head">GAME
+                    <button class="ghost-btn" id="btnNewGame" title="Start a new game">+ NEW</button>
+                    <button class="ghost-btn" id="btnGames" title="Load a saved game">LOAD</button>
+                </div>
+                <div class="active-game" id="activeGame">no game loaded</div>
+                <ul class="game-list hidden" id="gameList"></ul>
+            </div>
+
             <!-- Badges -->
             <div class="inst">
                 <div class="inst-head">GYM BADGES</div>
@@ -166,6 +176,6 @@
     </footer>
 
 </div>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

@@ -165,6 +165,50 @@
             .catch(function(){});
     }
 
+    // ---- game session ----
+    function renderGame(active){
+        var el=$('activeGame');
+        if(!active){ el.textContent='no game loaded'; $('metaRun').textContent='—'; return; }
+        var st=active.stats||{};
+        el.innerHTML='';
+        var name=document.createElement('span'); name.textContent=active.name||active.id;
+        var sub=document.createElement('span'); sub.className='ag-sub';
+        sub.textContent=(active.game||'red')+' · '+(st.turns||0)+' turns · brain '+(active.hermes_session_id?'linked':'pending');
+        el.appendChild(name); el.appendChild(sub);
+        $('metaRun').textContent='#'+(active.id||'').slice(-6);
+    }
+    function newGame(){
+        var name=prompt('Name this run (optional):','');
+        if(name===null) return; // cancelled
+        fetch(baseURL+'/games/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||null})})
+            .then(function(r){return r.json();})
+            .then(function(){ $('gameList').classList.add('hidden'); })
+            .catch(function(){});
+    }
+    function toggleGameList(){
+        var ul=$('gameList');
+        if(!ul.classList.contains('hidden')){ ul.classList.add('hidden'); return; }
+        fetch(baseURL+'/games').then(function(r){return r.json();}).then(function(d){
+            ul.innerHTML='';
+            (d.games||[]).forEach(function(g){
+                var li=document.createElement('li');
+                li.className='gl-item'+(g.id===d.active?' active':'');
+                var n=document.createElement('span'); n.className='gl-name'; n.textContent=g.name||g.id;
+                var m=document.createElement('span'); m.className='gl-meta';
+                m.textContent=(g.turns||0)+' turns · '+(g.save_count||0)+' saves · '+(g.milestones||0)+' milestones'+(g.latest_save?(' · '+g.latest_save):'');
+                li.appendChild(n); li.appendChild(m);
+                li.addEventListener('click', function(){ loadGame(g.id); ul.classList.add('hidden'); });
+                ul.appendChild(li);
+            });
+            if(!(d.games||[]).length){ var e=document.createElement('li'); e.className='gl-meta'; e.textContent='no saved games yet'; ul.appendChild(e); }
+            ul.classList.remove('hidden');
+        }).catch(function(){});
+    }
+    function loadGame(id){
+        fetch(baseURL+'/games/'+id+'/load',{method:'POST'}).then(function(r){return r.json();})
+            .then(function(){ poll(); }).catch(function(){});
+    }
+
     function renderBadges(count, list){
         var row=$('badgesRow'); row.innerHTML='';
         for(var i=0;i<8;i++){
@@ -285,6 +329,7 @@
         }
         if(type==='objectives'){ renderObjectives(msg.objectives||[]); return; }
         if(type==='control'){ renderControl(msg.state||'stopped'); return; }
+        if(type==='game'){ renderGame(msg.active||null); return; }
         if(type==='action'){
             renderEvent(msg);
             if(msg.state_after){ var j=JSON.stringify(msg.state_after); if(j!==lastStateJSON){ lastStateJSON=j; renderStats(msg.state_after); } }
@@ -320,6 +365,8 @@
         $('btnStart').addEventListener('click', function(){ setControl('running'); });
         $('btnPause').addEventListener('click', function(){ setControl('paused'); });
         $('btnStop').addEventListener('click', function(){ setControl('stopped'); });
+        $('btnNewGame').addEventListener('click', newGame);
+        $('btnGames').addEventListener('click', toggleGameList);
         var box=$('logContainer');
         box.addEventListener('scroll', function(){ autoScroll = box.scrollTop+box.clientHeight >= box.scrollHeight-30; });
     }
@@ -337,6 +384,7 @@
         // initial objectives + control state (WS also pushes these on connect)
         fetch(baseURL+'/objectives').then(function(r){return r.json();}).then(function(d){ renderObjectives((d&&d.objectives)||[]); }).catch(function(){});
         fetch(baseURL+'/control').then(function(r){return r.json();}).then(function(d){ renderControl((d&&d.state)||'stopped'); }).catch(function(){});
+        fetch(baseURL+'/games/current').then(function(r){return r.json();}).then(function(d){ renderGame((d&&d.active)||null); }).catch(function(){});
         initToggles();
         connect();
         poll(); pollTimer=setInterval(poll, POLL_MS);

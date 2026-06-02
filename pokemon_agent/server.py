@@ -70,6 +70,16 @@ class ControlRequest(BaseModel):
     state: str           # "running" | "paused" | "stopped"
 
 
+class NewGameRequest(BaseModel):
+    """Body for POST /games/new."""
+    name: Optional[str] = None
+
+
+class HermesSessionRequest(BaseModel):
+    """Body for POST /games/{id}/hermes — bind the Hermes session id."""
+    hermes_session_id: str
+
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -90,6 +100,10 @@ _objectives: list = [
 # Autopilot run state. "stopped" (default) | "running" | "paused".
 # A standalone `pokemon-agent play` loop reads this and only acts when running.
 _control_state: str = "stopped"
+
+# Game-session layer (binds Hermes brain + emulator saves + objectives/stats).
+_session_mgr = None       # GameSessionManager
+_active_session = None     # GameSession currently being played
 
 # WebSocket clients
 _ws_clients: Set[WebSocket] = set()
@@ -327,14 +341,19 @@ async def _startup():
         from pokemon_agent.memory.red import PokemonRedReader
         _reader = PokemonRedReader(_emulator)
     elif game_type == "firered":
-        from pokemon_agent.memory.firered import PokemonFireRedReader
-        _reader = PokemonFireRedReader(_emulator)
+        from pokemon_agent.memory.firered import FireRedMemoryReader
+        _reader = FireRedMemoryReader(_emulator)
     else:
         raise ValueError(f"Unknown game type: {game_type}")
 
     # Create data directories
     data_dir = Path(_config.data_dir).expanduser().resolve()
     (data_dir / "saves").mkdir(parents=True, exist_ok=True)
+
+    # Initialise the game-session manager.
+    global _session_mgr
+    from pokemon_agent.sessions import GameSessionManager
+    _session_mgr = GameSessionManager(str(data_dir))
 
     # Try mounting dashboard
     try:
@@ -477,6 +496,11 @@ async def push_event(req: EventRequest):
         event["description"] = req.description
     if req.category is not None:
         event["category"] = req.category
+    # Persist real milestones into the active session's timeline.
+    if req.type in ("key_moment", "moment") and req.description \
+            and _active_session is not None and _session_mgr is not None:
+        _session_mgr.add_milestone(_active_session, req.description,
+                                   req.category or "milestone")
     await broadcast(event)
     return {"success": True, "broadcast_to": len(_ws_clients)}
 
@@ -496,6 +520,9 @@ async def set_objectives(req: ObjectivesRequest):
     """
     global _objectives
     _objectives = [o.model_dump() for o in req.objectives]
+    if _active_session is not None and _session_mgr is not None:
+        _active_session.objectives = _objectives
+        _session_mgr.save(_active_session)
     await broadcast({"type": "objectives", "objectives": _objectives})
     return {"success": True, "objectives": _objectives}
 
@@ -523,6 +550,130 @@ async def set_control(req: ControlRequest):
     return {"success": True, "state": _control_state}
 
 
+# ---------------------------------------------------------------------------
+# Game sessions — new game / load game / list / delete
+# ---------------------------------------------------------------------------
+
+def _game_summary() -> dict:
+    if _active_session is None:
+        return {"active": None}
+    gs = _active_session
+    return {"active": {"id": gs.id, "name": gs.name, "game": gs.game,
+                       "hermes_session_id": gs.hermes_session_id,
+                       "objectives": gs.objectives, "stats": gs.stats}}
+
+
+async def _activate(gs) -> None:
+    """Make `gs` the active session: sync objectives, broadcast, persist."""
+    global _active_session, _objectives
+    _active_session = gs
+    _objectives = gs.objectives or _objectives
+    _session_mgr.save(gs)
+    await broadcast({"type": "objectives", "objectives": _objectives})
+    await broadcast({"type": "game", **_game_summary()})
+
+
+@app.get("/games")
+async def list_games():
+    """List all game sessions (newest first) + which one is active."""
+    if _session_mgr is None:
+        raise HTTPException(status_code=503, detail="Session manager not ready")
+    return {"games": _session_mgr.list(),
+            "active": _active_session.id if _active_session else None}
+
+
+@app.get("/games/current")
+async def current_game():
+    """The active game session summary (or {active: null})."""
+    return _game_summary()
+
+
+@app.post("/games/new")
+async def new_game(req: NewGameRequest):
+    """Start a NEW game: fresh emulator boot + a fresh session manifest.
+
+    Resets the emulator to the ROM's title/boot (no save loaded) and creates a
+    new GameSession (new Hermes brain — hermes_session_id starts null and is
+    bound on the autopilot's first turn).
+    """
+    _ensure_emulator()
+    if _session_mgr is None or _config is None:
+        raise HTTPException(status_code=503, detail="Server not ready")
+    # Fresh boot: rebuild the emulator from the ROM (clears all game state).
+    try:
+        from pokemon_agent.emulator import create_emulator
+        global _emulator, _reader
+        _emulator = await _run_sync(create_emulator, _config.rom_path)
+        if _config.game_type == "red":
+            from pokemon_agent.memory.red import PokemonRedReader
+            _reader = PokemonRedReader(_emulator)
+        else:
+            from pokemon_agent.memory.firered import FireRedMemoryReader
+            _reader = FireRedMemoryReader(_emulator)
+        # tick a few frames so the title screen renders
+        await _run_sync(_emulator.tick, 60)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"New-game reset failed: {e}")
+
+    gs = _session_mgr.create(name=req.name, game=_config.game_type)
+    await _activate(gs)
+    await broadcast({"type": "control", "state": _control_state})
+    return {"success": True, "game": gs.to_dict()}
+
+
+@app.post("/games/{sid}/load")
+async def load_game(sid: str):
+    """Load an existing game session: restore its latest save-state and make
+    it active (its Hermes session id is restored too, so the autopilot resumes
+    the SAME brain). If the session has no save yet, just activate it."""
+    _ensure_emulator()
+    if _session_mgr is None:
+        raise HTTPException(status_code=503, detail="Session manager not ready")
+    gs = _session_mgr.load(sid)
+    if gs is None:
+        raise HTTPException(status_code=404, detail=f"Game session not found: {sid}")
+    latest = _session_mgr.latest_save_path(sid)
+    if latest is not None:
+        try:
+            await _run_sync(_emulator.load_state, str(latest))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load save: {e}")
+    await _activate(gs)
+    state_after = await _run_sync(_get_state_dict)
+    await broadcast({"type": "state_update", "reason": "load_game", "state": state_after})
+    return {"success": True, "game": gs.to_dict(),
+            "restored_save": latest.stem if latest else None}
+
+
+@app.post("/games/{sid}/hermes")
+async def bind_hermes(sid: str, req: HermesSessionRequest):
+    """Bind/refresh the Hermes session id for a game (autopilot calls this on
+    its first turn so the run's brain memory is persisted in the manifest)."""
+    if _session_mgr is None:
+        raise HTTPException(status_code=503, detail="Session manager not ready")
+    gs = (_active_session if (_active_session and _active_session.id == sid)
+          else _session_mgr.load(sid))
+    if gs is None:
+        raise HTTPException(status_code=404, detail=f"Game session not found: {sid}")
+    gs.hermes_session_id = req.hermes_session_id
+    _session_mgr.save(gs)
+    await broadcast({"type": "game", **_game_summary()})
+    return {"success": True, "hermes_session_id": gs.hermes_session_id}
+
+
+@app.delete("/games/{sid}")
+async def delete_game(sid: str):
+    """Delete a game session and its saves (cannot delete the active one)."""
+    if _session_mgr is None:
+        raise HTTPException(status_code=503, detail="Session manager not ready")
+    if _active_session and _active_session.id == sid:
+        raise HTTPException(status_code=400, detail="Cannot delete the active game; load another first.")
+    ok = _session_mgr.delete(sid)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Game session not found: {sid}")
+    return {"success": True, "deleted": sid}
+
+
 @app.post("/action")
 async def execute_actions(req: ActionRequest):
     """Execute a sequence of game actions."""
@@ -535,7 +686,13 @@ async def execute_actions(req: ActionRequest):
 
         state_after = await _run_sync(_get_state_dict)
 
-        # Grab a screenshot for the live dashboard
+        # Bump per-session stats.
+        if _active_session is not None and _session_mgr is not None:
+            s = _active_session.stats
+            s["actions"] = s.get("actions", 0) + executed
+            s["turns"] = s.get("turns", 0) + 1
+            _session_mgr.save(_active_session)
+
         try:
             png_bytes = await _run_sync(_get_screenshot_bytes)
             screenshot_b64 = base64.b64encode(png_bytes).decode("ascii")
@@ -569,16 +726,24 @@ async def execute_actions(req: ActionRequest):
 
 @app.post("/save")
 async def save_state(req: SaveRequest):
-    """Save emulator state to disk."""
+    """Save emulator state. Routed into the active game session's folder when
+    one is active; otherwise the legacy flat saves/ dir."""
     _ensure_emulator()
     if not _config:
         raise HTTPException(status_code=503, detail="Server not configured")
     try:
-        saves_dir = Path(_config.data_dir).expanduser().resolve() / "saves"
-        saves_dir.mkdir(parents=True, exist_ok=True)
+        if _active_session is not None and _session_mgr is not None:
+            saves_dir = _session_mgr.saves_dir(_active_session.id)
+        else:
+            saves_dir = Path(_config.data_dir).expanduser().resolve() / "saves"
+            saves_dir.mkdir(parents=True, exist_ok=True)
         save_path = saves_dir / f"{req.name}.state"
         await _run_sync(_emulator.save_state, str(save_path))
-        return {"success": True, "path": str(save_path)}
+        if _active_session is not None and _session_mgr is not None:
+            _active_session.stats["saves"] = _active_session.stats.get("saves", 0) + 1
+            _session_mgr.save(_active_session)
+        return {"success": True, "path": str(save_path),
+                "session": _active_session.id if _active_session else None}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Save error: {e}")
 
@@ -701,6 +866,7 @@ async def websocket_endpoint(ws: WebSocket):
         # Send current objectives + control state so the panel + buttons sync.
         await ws.send_json({"type": "objectives", "objectives": _objectives})
         await ws.send_json({"type": "control", "state": _control_state})
+        await ws.send_json({"type": "game", **_game_summary()})
         # Keep alive — wait for client messages (or disconnect)
         while True:
             data = await ws.receive_text()
