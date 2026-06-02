@@ -44,18 +44,79 @@ curl -s http://localhost:8765/health
 
 Tell the user: "Dashboard available at http://localhost:8765/dashboard"
 
+## Navigation — Use the Collision Map (most important)
+
+The single biggest mistake an agent makes is guessing walkability from raw
+pixels and getting lost. Don't. The server reads the game's own collision
+data from RAM and hands you a ground-truth map.
+
+```bash
+# ASCII walkability map of the current screen (text — cheap + exact)
+curl -s http://localhost:8765/map/ascii
+```
+
+```
+   A B C D E F G H I J
+ 1 # # # # . . . . . .
+ 2 # # # # # . # # # .
+ 3 . . . . . . . . . .
+ 4 . . . . . . . . . .
+ 5 . . . . @ . . . . .   <- you are ALWAYS at E5
+ 6 # # # # # # # # # #
+ 7 . . . # . . . . . #
+
+@ you (E5)   . walkable   # blocked
+up=row-1 down=row+1 left=col-1 right=col+1
+```
+
+- Columns are A–J (left→right), rows 1–9 (top→bottom). You are **always** in
+  cell **E5** (the screen scrolls around you).
+- `.` = you can step there, `#` = blocked (tree/fence/wall/water/sign).
+- To plan a move: count cells from E5. Target G6? That's right-2, down-1 —
+  but only if every cell on the path is `.`.
+- This map is also embedded in `/state` under `collision` (`walkable` grid +
+  `ascii` string + `player_cell`).
+
+Use the **ASCII map to decide WHERE to walk**; use a **screenshot to identify
+WHAT things are** (NPCs, signs, doors, the Mart's blue roof, the Center's red
+roof). They complement each other — RAM gives geometry, vision gives meaning.
+
+```bash
+# Screenshot WITH the labelled grid + green/red walkability tint drawn on it
+curl -s "http://localhost:8765/screenshot/grid?scale=4" -o /tmp/pkm_grid.png
+# then: vision_analyze on /tmp/pkm_grid.png, referencing cells like "what is at H4?"
+```
+
+## Narrate to the dashboard (makes the stream come alive)
+
+Push your reasoning so viewers (and you) can follow the run. Display-only —
+these are NOT stored in conversation history, so they're free to use often.
+
+```bash
+B=http://localhost:8765
+curl -s -X POST $B/event -d '{"type":"reasoning","text":"At E5, fence blocks south; gap at G6. Heading there."}'
+curl -s -X POST $B/event -d '{"type":"decision","text":"Walk right 2 to G5, then down through G6."}'
+curl -s -X POST $B/event -d '{"type":"key_moment","description":"Reached Pewter City","category":"milestone"}'
+# categories: milestone | badge | catch | alert
+```
+
+A good rhythm each turn: post a short `reasoning` (what the map/screen shows),
+then a `decision` (the move you'll make), then send the action.
+
 ## Gameplay Loop
 
 Each turn, follow this cycle:
 
-### 1. Observe — Read Game State
+### 1. Observe — Read Game State + Map
 
 ```bash
 curl -s http://localhost:8765/state | python3 -m json.tool
+curl -s http://localhost:8765/map/ascii          # walkability — read this every turn
 ```
 
 Parse the JSON to understand:
-- Where am I? (map name, position)
+- Where am I? (map name, position, `collision.player_cell` = always E5)
+- Where can I walk? (`collision.ascii` / `/map/ascii` — `.` walkable, `#` blocked)
 - What's happening? (overworld, battle, dialog, menu)
 - Party status? (HP, levels, any fainted?)
 - Bag contents? (potions, pokeballs?)
@@ -195,14 +256,19 @@ Use these prefixes in Hermes memory for Pokémon-related entries:
 ## Taking Screenshots
 
 ```bash
-# Save screenshot for vision analysis
+# Plain frame
 curl -s http://localhost:8765/screenshot -o /tmp/pokemon_screen.png
+# Frame with the labelled A1..J9 grid + green/red walkability tint (preferred)
+curl -s "http://localhost:8765/screenshot/grid?scale=4" -o /tmp/pokemon_grid.png
 ```
 
-Use `vision_analyze` on the screenshot when:
-- You're unsure what's on screen (menus, NPCs)
+Use `vision_analyze` on the grid screenshot when:
+- You need to identify WHAT is on screen (menus, NPCs, signs, building roofs)
 - You need to read in-game text that RAM doesn't capture well
-- You want to verify your position visually
+- You want to confirm orientation — refer to cells (e.g. "what is at H4?")
+
+Remember: for *where can I move*, the ASCII collision map (`/map/ascii`) is
+faster and exact. Reserve vision for *what things are*.
 
 ## Stopping
 

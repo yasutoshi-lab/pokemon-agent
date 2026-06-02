@@ -27,9 +27,10 @@ Let any AI agent — [Hermes Agent](https://github.com/NousResearch/hermes-agent
 
 - **🔌 Headless emulation** — No display server, X11, or GUI needed. Pure in-process emulation.
 - **🌐 REST API** — `GET /state`, `POST /action`, `GET /screenshot` — control the game over HTTP.
+- **🗺️ Ground-truth navigation** — RAM-derived collision map (`GET /map/ascii`) and a labelled A1..J9 grid overlay (`GET /screenshot/grid`) so an agent navigates from real walkability data instead of guessing from pixels.
 - **📡 WebSocket** — Real-time event streaming for live monitoring.
-- **🧠 Structured game state** — RAM is parsed into clean JSON: party, bag, badges, map, battle, dialog.
-- **🎨 Live dashboard** — Optional web GUI to watch the AI play (Claude Plays Pokémon style).
+- **🧠 Structured game state** — RAM is parsed into clean JSON: party, bag, badges, map, battle, dialog, collision grid.
+- **🎨 Live "Field Log" dashboard** — Editorial broadcast UI: the agent's reasoning stream, live grid map, objectives, telemetry (stuck-meter, blackout counter), and a milestone timeline.
 - **🎮 Multi-game** — Supports Game Boy (Pokémon Red/Blue) via PyBoy, GBA (FireRed) via PyGBA.
 - **🤖 Agent-agnostic** — Works with any AI agent, RL framework, or custom script.
 
@@ -142,12 +143,15 @@ pip install pokemon-agent[dashboard]
 
 Then open `http://localhost:8765/dashboard` in your browser.
 
-The dashboard shows:
-- **Live game screenshot** — Updated each turn with decorative corner brackets
-- **AI reasoning stream** — Watch the agent think in real-time
-- **Team status** — All party Pokémon with HP bars, types, levels
-- **Badge progress** — Visual badge tracker
-- **Action log** — Color-coded history of all actions and reasoning
+The dashboard ("Field Log") is an editorial broadcast UI — designed to be
+watched, not just a debug console. It shows:
+- **Reasoning stream** — the agent's THINK / DECIDE / ACT / MILESTONE / ALERT
+  narration, typeset as distinct entries (push it via `POST /event`)
+- **Game stage** — live screenshot with a SCREEN ⇄ GRID MAP toggle (grid map
+  shows the labelled, walkability-tinted overlay)
+- **Instruments** — gym badges, three-tier objectives, telemetry (a live
+  stuck-meter, blackout / caught / action counters), and a milestone timeline
+- **Party belt** — all six slots with types, HP bars, status, and moves
 
 ## Supported Games
 
@@ -175,10 +179,13 @@ The skill teaches Hermes battle strategy, exploration patterns, team management,
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Server info |
-| `/state` | GET | Full game state JSON |
+| `/state` | GET | Full game state JSON (includes `collision` walkability grid for Red) |
 | `/screenshot` | GET | Current frame (PNG) |
+| `/screenshot/grid` | GET | Current frame with a labelled A1..J9 grid + walkability tint (PNG) |
 | `/screenshot/base64` | GET | Current frame (base64 JSON) |
+| `/map/ascii` | GET | Ground-truth ASCII walkability map (`@`/`.`/`#`) |
 | `/action` | POST | Execute game actions |
+| `/event` | POST | Push agent narration (reasoning/decision/key_moment/alert) to the dashboard |
 | `/save` | POST | Save emulator state |
 | `/load` | POST | Load emulator state |
 | `/saves` | GET | List saved states |
@@ -225,6 +232,8 @@ pokemon_agent/
 ├── cli.py               # CLI entry point (pokemon-agent command)
 ├── server.py            # FastAPI game server (REST + WebSocket)
 ├── emulator.py          # PyBoy/PyGBA wrapper (headless)
+├── collision.py         # RAM walkability map (per-tileset collision -> 10x9 grid)
+├── overlay.py           # Labelled A1..J9 grid + walkability-tint screenshot overlay
 ├── pathfinding.py       # A* grid navigation
 ├── memory/
 │   ├── reader.py        # Abstract game memory reader
