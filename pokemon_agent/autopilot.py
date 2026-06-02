@@ -1,74 +1,80 @@
-"""Standalone autopilot — lets pokemon-agent play itself via an LLM.
+"""Standalone driver that lets **Hermes Agent** play Pokemon through a session.
 
-`pokemon-agent play` runs an OBSERVE -> THINK -> ACT loop against a running
-game server:
+This is NOT a raw-LLM loop. The brain is a real Hermes Agent session — with
+the `pokemon-player` skill, vision, memory, and the terminal tool — driven one
+turn at a time. The driver is intentionally thin:
 
-  1. OBSERVE  GET /state (+ embedded collision grid) and GET /screenshot/grid
-  2. THINK    send the compact state, the ASCII walkability map, and the
-              grid screenshot to a vision LLM; it returns JSON:
-              {reasoning, decision, actions[], milestone?, objectives?}
-  3. ACT      POST narration to /event, then POST the actions to /action
-  4. periodically POST /save
+  loop while /control == "running":
+      hermes chat --resume <session> --yolo -s pokemon-player \\
+        --image <grid screenshot> -q "<turn nudge + compact state + ascii map>"
 
-The loop is gated by the server's /control state: it only acts while
-"running", idles while "paused", and exits on "stopped". This is what the
-dashboard's Start / Pause / Stop buttons drive.
+Hermes itself does the work each turn: it reads the state/map we hand it (and
+can curl the server for more), looks at the grid screenshot with its own
+vision, decides, then calls the game server's HTTP API with its terminal tool
+to POST /action and POST /event (narration) and POST /objectives. Because we
+pass --resume with a single persistent session id, Hermes keeps memory and
+context across the whole playthrough — it is "running through a session."
 
-LLM config (env, all optional — defaults to OpenRouter):
-  POKEMON_LLM_BASE_URL   default https://openrouter.ai/api/v1
-  POKEMON_LLM_API_KEY    default $OPENROUTER_API_KEY
-  POKEMON_LLM_MODEL      default anthropic/claude-sonnet-4.5  (must be vision-capable)
+The loop is gated by the server's /control state (Start/Pause/Stop buttons).
+
+Config (env, optional):
+  POKEMON_HERMES_MODEL     model override passed to `hermes chat -m`
+  POKEMON_HERMES_PROVIDER  provider override passed to `hermes chat --provider`
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import os
+import re
+import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import requests
 
-SYSTEM_PROMPT = """You are Hermes, an AI playing Pokémon Red autonomously on a live stream.
+# What Hermes is told once at the start of the session, then nudged each turn.
+TURN_NUDGE = """You are playing Pokémon Red live on the Hermes Plays Pokémon dashboard.
 
-Each turn you receive: the structured game state (party, position, dialog,
-battle, badges), a ground-truth ASCII walkability map, and a screenshot with a
-labelled A1..J9 grid (you are ALWAYS at cell E5; green = walkable, red = blocked).
+The game server is at {server}. Take ONE short turn now, then stop and reply.
 
-NAVIGATION RULES (critical):
-- Use the ASCII map to decide WHERE to move — it is exact. `.` = walkable,
-  `#` = blocked, `@` = you (E5). Count cells from E5: up=row-1, down=row+1,
-  left=col-1, right=col+1. NEVER plan a move through a `#` cell.
-- Use the screenshot to identify WHAT things are (NPCs, signs, doors, the
-  Mart's blue roof, the Center's red roof). Doors read as walkable on the map.
-- Move 2-4 steps at a time, then you'll re-observe. Don't send long blind paths.
-- After walking through a door/stairs the screen fades — add wait_60 once or twice.
+This turn:
+1. Look at the attached grid screenshot (A1..J9 cells, you are the player at
+   E5; the labelled grid + green/red walkability tint is drawn on it).
+2. Use the game state and the ASCII walkability map below to decide a move.
+   `.` = walkable, `#` = blocked, `@` = you (E5). Count cells from E5:
+   up=row-1, down=row+1, left=col-1, right=col+1. NEVER route through `#`.
+3. Narrate to the stream, then act, using the terminal tool with curl:
+   - POST {server}/event  body {{"type":"reasoning","text":"..."}}  (what you see)
+   - POST {server}/event  body {{"type":"decision","text":"..."}}   (your plan)
+   - POST {server}/action body {{"actions":["walk_down","walk_down"]}} (2-4 moves)
+   - On a real beat (new town/badge/item/catch): POST {server}/event
+     body {{"type":"key_moment","description":"...","category":"milestone|badge|catch"}}
+   - If your goals change: POST {server}/objectives body
+     {{"objectives":[{{"tier":"primary","text":"...","done":false}}, ...]}}
+   All POSTs need  -H 'Content-Type: application/json'.
+4. Keep it to 2-4 game actions this turn — you'll get another turn next.
 
-GAMEPLAY:
-- If dialog is active: advance it (a_until_dialog_end, or press_a).
-- If in battle: pick a good move (super-effective if possible), or run from
-  trash wild battles. Squirtle's Water beats Rock/Ground/Fire.
-- Priority: dialog > battle > heal if hurt > story objective > explore.
+Reserve vision (the screenshot) for identifying WHAT things are (doors, signs,
+NPCs, the Mart's blue roof). Use the ASCII map for WHERE you can walk.
 
-Respond with ONLY a JSON object, no prose around it:
-{
-  "reasoning": "1-2 sentences: what the map/screen shows and your read",
-  "decision": "the concrete move you're about to make",
-  "actions": ["walk_down","walk_down"],     // 1-4 action strings
-  "milestone": "short text" or null,         // set ONLY on a real beat (new town/badge/item/catch)
-  "objectives": [                            // OPTIONAL: only when goals change
-    {"tier":"primary","text":"...","done":false}
-  ]
-}
+CURRENT STATE:
+{state}
 
-Valid actions: press_a, press_b, press_start, press_select,
-walk_up, walk_down, walk_left, walk_right, wait_60, a_until_dialog_end, hold_b_120."""
+WALKABILITY MAP (you are @ at E5):
+{ascii_map}
+
+Take your turn now."""
+
+FIRST_TURN_PREFIX = """This is the start of your Pokémon Red run. First, set your objectives by
+POSTing to {server}/objectives (primary/secondary/tertiary tiers), then take
+your first turn as described below.
+
+"""
 
 
 def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Trim /state to what the model needs (drop the raw collision grid)."""
     p = state.get("player", {}) or {}
     party = []
     for m in state.get("party", []) or []:
@@ -88,28 +94,28 @@ def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "party": party,
         "dialog_active": (state.get("dialog") or {}).get("active"),
         "in_battle": battle.get("in_battle"),
-        "enemy": {"species": enemy.get("species"), "level": enemy.get("level"),
-                  "hp": enemy.get("hp"), "max_hp": enemy.get("max_hp")} if battle.get("in_battle") else None,
+        "enemy": ({"species": enemy.get("species"), "level": enemy.get("level"),
+                   "hp": enemy.get("hp"), "max_hp": enemy.get("max_hp")}
+                  if battle.get("in_battle") else None),
     }
 
 
-class Autopilot:
-    def __init__(self, server: str, model: str, base_url: str, api_key: str,
-                 turn_delay: float = 1.5, save_every: int = 20):
+class HermesDriver:
+    def __init__(self, server: str, model: Optional[str], provider: Optional[str],
+                 turn_delay: float = 1.5, save_every: int = 20,
+                 turn_timeout: int = 240):
         self.server = server.rstrip("/")
+        self.model = model
+        self.provider = provider
         self.turn_delay = turn_delay
         self.save_every = save_every
+        self.turn_timeout = turn_timeout
+        self.session_id: Optional[str] = None
         self.turn = 0
-        from openai import OpenAI
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
-        self.model = model
 
     # --- server helpers ---
     def _get(self, path: str):
         return requests.get(self.server + path, timeout=15)
-
-    def _post(self, path: str, body: dict):
-        return requests.post(self.server + path, json=body, timeout=30)
 
     def control_state(self) -> str:
         try:
@@ -119,97 +125,92 @@ class Autopilot:
 
     def event(self, **kw):
         try:
-            self._post("/event", kw)
+            requests.post(self.server + "/event", json=kw, timeout=15)
         except Exception:
             pass
 
-    # --- one turn ---
-    def step(self) -> bool:
-        """Run one OBSERVE->THINK->ACT cycle. Returns False to stop."""
+    # --- one turn = one Hermes invocation ---
+    def step(self) -> None:
         try:
             state = self._get("/state").json()
         except Exception as e:
-            print(f"[autopilot] state read failed: {e}", file=sys.stderr)
-            return True
-        ascii_map = (state.get("collision") or {}).get("ascii", "(no map)")
+            print(f"[driver] state read failed: {e}", file=sys.stderr)
+            time.sleep(2)
+            return
+        ascii_map = (state.get("collision") or {}).get("ascii")
+        if not ascii_map:
+            ascii_map = ("(in battle — no overworld map this turn)"
+                         if (state.get("battle") or {}).get("in_battle")
+                         else "(no map available)")
+
+        # Grab the grid screenshot to a temp file for --image.
+        img_path = "/tmp/pokemon_turn_grid.png"
         try:
             shot = self._get("/screenshot/grid?scale=3").content
-            b64 = base64.b64encode(shot).decode("ascii")
+            with open(img_path, "wb") as f:
+                f.write(shot)
+            have_img = True
         except Exception:
-            b64 = None
+            have_img = False
 
-        user_text = (
-            "GAME STATE:\n" + json.dumps(_compact_state(state), indent=2) +
-            "\n\nWALKABILITY MAP (you are @ at E5):\n" + ascii_map +
-            "\n\nDecide your next move. Respond with the JSON object only."
+        prompt = TURN_NUDGE.format(
+            server=self.server,
+            state=json.dumps(_compact_state(state), indent=2),
+            ascii_map=ascii_map,
         )
-        content: List[Dict[str, Any]] = [{"type": "text", "text": user_text}]
-        if b64:
-            content.append({"type": "image_url",
-                            "image_url": {"url": "data:image/png;base64," + b64}})
+        if self.session_id is None:
+            prompt = FIRST_TURN_PREFIX.format(server=self.server) + prompt
+
+        cmd = ["hermes", "chat", "-Q", "--yolo", "--pass-session-id",
+               "-s", "pokemon-player"]
+        if self.session_id:
+            cmd += ["--resume", self.session_id]
+        if self.model:
+            cmd += ["-m", self.model]
+        if self.provider:
+            cmd += ["--provider", self.provider]
+        if have_img:
+            cmd += ["--image", img_path]
+        cmd += ["-q", prompt]
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT},
-                          {"role": "user", "content": content}],
-                temperature=0.4, max_tokens=600,
-                response_format={"type": "json_object"},
-            )
-            raw = resp.choices[0].message.content or "{}"
-            plan = json.loads(raw)
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=self.turn_timeout)
+            stdout = out.stdout or ""
+        except subprocess.TimeoutExpired:
+            print("[driver] hermes turn timed out", file=sys.stderr)
+            self.event(type="alert", text="Turn timed out — retrying.")
+            return
         except Exception as e:
-            print(f"[autopilot] LLM call failed: {e}", file=sys.stderr)
-            self.event(type="alert", text=f"LLM error: {e}")
+            print(f"[driver] hermes invocation failed: {e}", file=sys.stderr)
+            self.event(type="alert", text=f"Driver error: {e}")
             time.sleep(3)
-            return True
+            return
 
-        reasoning = (plan.get("reasoning") or "").strip()
-        decision = (plan.get("decision") or "").strip()
-        actions = plan.get("actions") or []
-        if isinstance(actions, str):
-            actions = [actions]
-        actions = [str(a).strip() for a in actions if a][:4]
-
-        if reasoning:
-            self.event(type="reasoning", text=reasoning)
-        if decision:
-            self.event(type="decision", text=decision)
-        if plan.get("milestone"):
-            self.event(type="key_moment", description=str(plan["milestone"]), category="milestone")
-        if isinstance(plan.get("objectives"), list) and plan["objectives"]:
-            try:
-                self._post("/objectives", {"objectives": plan["objectives"]})
-            except Exception:
-                pass
-
-        if actions:
-            try:
-                self._post("/action", {"actions": actions})
-            except Exception as e:
-                print(f"[autopilot] action failed: {e}", file=sys.stderr)
+        # Capture the session id from the first run so later turns resume it.
+        if self.session_id is None:
+            m = re.search(r"hermes --resume (\S+)", stdout) or \
+                re.search(r"Session:\s*(\S+)", stdout)
+            if m:
+                self.session_id = m.group(1)
+                print(f"[driver] Hermes session: {self.session_id}")
+                self.event(type="key_moment",
+                           description="Hermes session started",
+                           category="milestone")
 
         self.turn += 1
-        if self.save_every and self.turn % self.save_every == 0:
-            try:
-                self._post("/save", {"name": "autopilot_latest"})
-                self.event(type="key_moment", description=f"Autosaved (turn {self.turn})", category="milestone")
-            except Exception:
-                pass
-        return True
 
-    # --- main loop ---
     def run(self):
-        print(f"[autopilot] connected to {self.server}, model={self.model}")
-        print("[autopilot] waiting for control=running (use the dashboard Start button)…")
-        self.event(type="alert", text="Autopilot online — press START to play.")
+        model_note = self.model or "config default"
+        print(f"[driver] Hermes-driven autopilot. server={self.server} model={model_note}")
+        print("[driver] waiting for control=running (dashboard Start button)…")
+        self.event(type="alert", text="Hermes online — press START to play.")
         idle_logged = False
         while True:
             st = self.control_state()
             if st == "stopped":
-                # idle until started; exit only on explicit Ctrl-C
                 if not idle_logged:
-                    print("[autopilot] stopped — idling.")
+                    print("[driver] stopped — idling.")
                     idle_logged = True
                 time.sleep(2)
                 continue
@@ -217,20 +218,12 @@ class Autopilot:
                 time.sleep(1.5)
                 continue
             idle_logged = False
-            if not self.step():
-                break
+            self.step()
             time.sleep(self.turn_delay)
 
 
 def run_autopilot(server: str = "http://localhost:8765", model: Optional[str] = None,
                   turn_delay: float = 1.5):
-    base_url = os.environ.get("POKEMON_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-    api_key = (os.environ.get("POKEMON_LLM_API_KEY")
-               or os.environ.get("OPENROUTER_API_KEY") or "")
-    model = (model or os.environ.get("POKEMON_LLM_MODEL")
-             or "anthropic/claude-sonnet-4.5")
-    if not api_key:
-        print("ERROR: no LLM API key. Set POKEMON_LLM_API_KEY or OPENROUTER_API_KEY.",
-              file=sys.stderr)
-        sys.exit(1)
-    Autopilot(server, model, base_url, api_key, turn_delay=turn_delay).run()
+    model = model or os.environ.get("POKEMON_HERMES_MODEL")
+    provider = os.environ.get("POKEMON_HERMES_PROVIDER")
+    HermesDriver(server, model, provider, turn_delay=turn_delay).run()

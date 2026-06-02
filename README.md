@@ -65,35 +65,32 @@ pokemon-agent serve --rom path/to/pokemon_red.gb
   WebSocket:  ws://localhost:8765/ws
 ```
 
-### Autopilot — let it play itself
+### Autopilot — Hermes Agent plays itself
 
 The server is a passive API — it holds the emulator but does not play. To make
-the game play autonomously (the "stream it 24/7" mode), run the built-in
-autopilot in a second process:
+the game play autonomously, run the bundled driver in a second process:
 
 ```bash
 # 1. start the server (terminal A)
 pokemon-agent serve --rom path/to/pokemon_red.gb
 
-# 2. start the autopilot brain (terminal B)
-export OPENROUTER_API_KEY=sk-...        # or POKEMON_LLM_API_KEY
-pokemon-agent play                       # OBSERVE -> THINK (vision LLM) -> ACT loop
+# 2. start the driver (terminal B) — requires the `hermes` CLI on PATH
+pokemon-agent play --port 8765
 ```
 
-The autopilot idles until you press **START** on the dashboard (it polls
-`/control`). **START / PAUSE / STOP** on the page drive it live; it narrates
-every turn to the Field Log via `/event` and updates objectives via
-`/objectives`. LLM config (env, all optional — defaults to OpenRouter):
+The brain is a real **Hermes Agent** session, not a bare LLM. Each turn the
+driver invokes `hermes chat --resume <session> --yolo -s pokemon-player
+--image <grid screenshot> -q "<state + map>"`, so Hermes plays with its full
+stack — the `pokemon-player` skill, vision, memory, and the terminal tool —
+and keeps context across the whole run via one persistent session. Hermes
+itself curls the server to POST `/action`, `/event` (narration), and
+`/objectives`.
 
-| Var | Default |
-|-----|---------|
-| `POKEMON_LLM_BASE_URL` | `https://openrouter.ai/api/v1` |
-| `POKEMON_LLM_API_KEY` | `$OPENROUTER_API_KEY` |
-| `POKEMON_LLM_MODEL` | `anthropic/claude-sonnet-4.5` (must be vision-capable) |
-
-Install the autopilot deps with `pip install pokemon-agent[autopilot]` (adds
-`openai` + `requests`). Any AI agent (Hermes, your own script) can drive the
-game the same way over HTTP instead — the autopilot is just the bundled brain.
+The driver idles until you press **START** on the dashboard (it polls
+`/control`); **START / PAUSE / STOP** drive it live. Hermes uses its own
+configured provider/model; override per-run with `POKEMON_HERMES_MODEL` /
+`POKEMON_HERMES_PROVIDER`. Each turn is a full agent loop (seconds-to-minutes),
+not a single API call — this is genuine agentic play, not a tight poll.
 
 ### Play from Any Agent
 

@@ -37,7 +37,7 @@ dependencies = [
 pyboy = ["pyboy>=2.0.0"]
 pygba = ["pygba>=0.1.0"]
 dashboard = ["aiofiles>=23.0.0"]
-autopilot = ["openai>=1.40", "requests>=2.28"]
+autopilot = ["requests>=2.28"]  # the `play` driver shells out to the `hermes` CLI
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
