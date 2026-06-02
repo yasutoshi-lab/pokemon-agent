@@ -66,6 +66,14 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 # WebSocket clients
 _ws_clients: Set[WebSocket] = set()
 
+# Replay buffer — recent narration/milestone events so a client that connects
+# mid-run sees the Field Log already populated instead of an empty panel.
+# Only display-worthy events are kept (reasoning/decision/key_moment/alert/
+# action), not the high-frequency screenshot/state_update frames.
+from collections import deque
+_event_history: deque = deque(maxlen=200)
+_REPLAYABLE = {"reasoning", "decision", "thought", "key_moment", "moment", "alert", "battle", "action"}
+
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
@@ -113,7 +121,20 @@ async def _run_sync(func, *args):
 
 
 async def broadcast(event: dict):
-    """Send a JSON event to every connected WebSocket client."""
+    """Send a JSON event to every connected WebSocket client.
+
+    Display-worthy events (narration, milestones, actions) are also recorded
+    in a replay buffer so a client connecting mid-run can backfill the log.
+    """
+    etype = event.get("type")
+    if etype in _REPLAYABLE:
+        rec = dict(event)
+        rec.setdefault("ts", time.time())
+        if etype == "action":
+            # Don't store the full state snapshot in the buffer — just the moves.
+            rec.pop("state_after", None)
+        _event_history.append(rec)
+
     dead: list[WebSocket] = []
     payload = json.dumps(event)
     for ws in _ws_clients:
@@ -600,6 +621,13 @@ async def websocket_endpoint(ws: WebSocket):
             "version": __version__,
             "emulator_ready": _emulator is not None,
         })
+        # Backfill: replay recent narration/milestone/action events so the
+        # Field Log is populated immediately instead of starting empty.
+        if _event_history:
+            await ws.send_json({
+                "type": "replay",
+                "events": list(_event_history),
+            })
         # Keep alive — wait for client messages (or disconnect)
         while True:
             data = await ws.receive_text()

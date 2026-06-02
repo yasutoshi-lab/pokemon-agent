@@ -19,14 +19,14 @@
         Ground:'#b89a4e', Flying:'#8779c4', Psychic:'#c25478', Bug:'#869520',
         Rock:'#8a7a38', Ghost:'#5a4878', Dragon:'#5838c4', Dark:'#4a3c34', Steel:'#8a8aa0'
     };
-    var POLL_MS = 2500, WS_BASE = 1000, WS_MAX = 20000, STUCK_MAX = 12;
+    var POLL_MS = 2500, WS_BASE = 1000, WS_MAX = 20000;
 
     // --- state ---
     var ws=null, wsLive=false, wsDelay=WS_BASE, wsTimer=null, pollTimer=null;
     var autoScroll=true, turnCount=0, actionCount=0, lastStateJSON='', hasFrame=false;
     var sessionStart=Date.now();
-    var lastPosKey=null, stuck=0, blackouts=0, caught=0, prevPartyAlive=null;
-    var seenMoments={}, gridMode=false, baseURL=loc();
+    var blackouts=0, caught=0, prevPartyAlive=null;
+    var seenMoments={}, gridMode=false, baseURL=loc(), replaying=false;
 
     var $ = function(id){ return document.getElementById(id); };
     function loc(){ return window.location.protocol+'//'+window.location.host; }
@@ -184,18 +184,8 @@
         return card;
     }
 
-    // ---- tension: stuck meter, blackouts, caught ----
+    // ---- telemetry: blackouts, caught ----
     function updateTension(state){
-        var p=state.player||{}, pos=p.position||{}, map=state.map||{};
-        var key=map.map_id+':'+pos.x+':'+pos.y;
-        if(key===lastPosKey) stuck=Math.min(STUCK_MAX, stuck+1);
-        else { stuck=0; lastPosKey=key; }
-        var sf=$('stuckFill'); var pctv=Math.round(stuck/STUCK_MAX*100);
-        sf.style.width=pctv+'%';
-        sf.className='gauge-fill stuck'+(stuck>=STUCK_MAX*0.75?' crit':stuck>=STUCK_MAX*0.4?' warn':'');
-        $('stuckVal').textContent=stuck;
-        if(stuck===STUCK_MAX) entry('alert','STUCK','No progress for '+STUCK_MAX+' turns — Hermes may be lost.');
-
         // blackout detection: whole party fainted while previously alive.
         // Guard against transient/partial reads: require valid max_hp data and
         // a prior confirmed alive>0 reading before ever counting a blackout.
@@ -255,6 +245,13 @@
     function handle(msg){
         var type=msg.type||msg.event;
         var payload=msg.data||msg.state||msg.state_after||null;
+        if(type==='replay'&&Array.isArray(msg.events)){
+            // Backfill the Field Log from the server's event buffer.
+            replaying=true;
+            msg.events.forEach(function(ev){ renderEvent(ev); });
+            replaying=false;
+            return;
+        }
         if(type==='action'){
             renderEvent(msg);
             if(msg.state_after){ var j=JSON.stringify(msg.state_after); if(j!==lastStateJSON){ lastStateJSON=j; renderStats(msg.state_after); } }
