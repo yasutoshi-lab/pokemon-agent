@@ -60,8 +60,32 @@ This turn:
    All POSTs need  -H 'Content-Type: application/json'.
 4. Keep it to 2-4 game actions this turn — you'll get another turn next.
 
+TEXT WINDOW / DIALOG HANDLING (do this FIRST every turn):
+- If a text window / dialog box is on screen (look at the screenshot, and check
+  `dialog_active` in CURRENT STATE), the game is waiting for you — you CANNOT
+  walk. Read the text, then advance it with `press_a`.
+- Send `press_a` repeatedly (e.g. {{"actions":["press_a","press_a","press_a"]}})
+  until the text window is fully closed (`dialog_active` is false). Only then
+  resume walking.
+- This applies to NPC/Oak speeches, signs, item pickups, battle prompts, and
+  scripted events. Do NOT try to walk while a text window is open — it does
+  nothing and wastes the turn.
+
 Reserve vision (the screenshot) for identifying WHAT things are (doors, signs,
 NPCs, the Mart's blue roof). Use the ASCII map for WHERE you can walk.
+
+INDOOR NAVIGATION — HOW TO LEAVE A ROOM/BUILDING:
+- Every indoor map (e.g. "Red's House 2F", any house/shop/gym) has an EXIT: a
+  STAIRS tile (to go between floors) and/or a DOOR/exit mat (to go outside).
+- These exits appear as ordinary walkable `.` cells on the ASCII map — they are
+  NOT specially marked. You must spot them in the SCREENSHOT and walk ONTO them.
+- Stairs are usually drawn near a room CORNER/EDGE (often bottom-left or a side);
+  a doormat/exit is usually at the BOTTOM edge of the room. Step directly onto
+  that tile to trigger the transition to the next floor / outside.
+- If you have spent several turns in the same indoor map (the map name has not
+  changed), STOP examining furniture (TV, SNES/PC, beds, plants — they only show
+  flavor text and waste turns). Instead head decisively toward the nearest
+  stairs/door tile and step on it. Your priority indoors is to GET OUT.
 
 CURRENT STATE:
 {state}
