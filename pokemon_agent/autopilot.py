@@ -156,7 +156,8 @@ class HermesDriver:
         except Exception:
             pass
 
-    def _save_frame(self, state: Dict[str, Any], img_bytes: Optional[bytes]) -> None:
+    def _save_frame(self, state: Dict[str, Any], img_bytes: Optional[bytes],
+                    hermes_output: Optional[str] = None) -> None:
         if not self.game_id:
             return
         try:
@@ -170,6 +171,7 @@ class HermesDriver:
                 "session_id": self.game_id,
                 "hermes_session_id": self.session_id,
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "hermes_output": hermes_output,
                 "state": state,
             }
             (frames / f"{stem}.json").write_text(json.dumps(record, indent=2))
@@ -209,8 +211,6 @@ class HermesDriver:
         except Exception:
             have_img = False
 
-        self._save_frame(state, shot)
-
         prompt = TURN_NUDGE.format(
             server=self.server,
             state=json.dumps(_compact_state(state), indent=2),
@@ -238,12 +238,16 @@ class HermesDriver:
         except subprocess.TimeoutExpired:
             print("[driver] hermes turn timed out", file=sys.stderr)
             self.event(type="alert", text="Turn timed out — retrying.")
+            self._save_frame(state, shot, hermes_output=None)
             return
         except Exception as e:
             print(f"[driver] hermes invocation failed: {e}", file=sys.stderr)
             self.event(type="alert", text=f"Driver error: {e}")
+            self._save_frame(state, shot, hermes_output=None)
             time.sleep(3)
             return
+
+        self._save_frame(state, shot, hermes_output=stdout)
 
         # Capture the session id from the first run so later turns resume it.
         if self.session_id is None:
