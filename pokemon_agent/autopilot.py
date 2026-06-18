@@ -60,6 +60,17 @@ This turn:
    All POSTs need  -H 'Content-Type: application/json'.
 4. Keep it to 2-4 game actions this turn — you'll get another turn next.
 
+TEXT WINDOW / DIALOG HANDLING (do this FIRST every turn):
+- If a text window / dialog box is on screen (look at the screenshot, and check
+  `dialog_active` in CURRENT STATE), the game is waiting for you — you CANNOT
+  walk. Read the text, then advance it with `press_a`.
+- Send `press_a` repeatedly (e.g. {{"actions":["press_a","press_a","press_a"]}})
+  until the text window is fully closed (`dialog_active` is false). Only then
+  resume walking.
+- This applies to NPC/Oak speeches, signs, item pickups, battle prompts, and
+  scripted events. Do NOT try to walk while a text window is open — it does
+  nothing and wastes the turn.
+
 Reserve vision (the screenshot) for identifying WHAT things are (doors, signs,
 NPCs, the Mart's blue roof). Use the ASCII map for WHERE you can walk.
 
