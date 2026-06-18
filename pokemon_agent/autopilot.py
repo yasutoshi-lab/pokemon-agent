@@ -157,7 +157,8 @@ class HermesDriver:
             pass
 
     def _save_frame(self, state: Dict[str, Any], img_bytes: Optional[bytes],
-                    hermes_output: Optional[str] = None) -> None:
+                    hermes_output: Optional[str] = None,
+                    hermes_input: Optional[str] = None) -> None:
         if not self.game_id:
             return
         try:
@@ -171,6 +172,8 @@ class HermesDriver:
                 "session_id": self.game_id,
                 "hermes_session_id": self.session_id,
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "hermes_input": hermes_input,
+                "hermes_input_image": f"{stem}.png" if img_bytes is not None else None,
                 "hermes_output": hermes_output,
                 "state": state,
             }
@@ -238,16 +241,16 @@ class HermesDriver:
         except subprocess.TimeoutExpired:
             print("[driver] hermes turn timed out", file=sys.stderr)
             self.event(type="alert", text="Turn timed out — retrying.")
-            self._save_frame(state, shot, hermes_output=None)
+            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt)
             return
         except Exception as e:
             print(f"[driver] hermes invocation failed: {e}", file=sys.stderr)
             self.event(type="alert", text=f"Driver error: {e}")
-            self._save_frame(state, shot, hermes_output=None)
+            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt)
             time.sleep(3)
             return
 
-        self._save_frame(state, shot, hermes_output=stdout)
+        self._save_frame(state, shot, hermes_output=stdout, hermes_input=prompt)
 
         # Capture the session id from the first run so later turns resume it.
         if self.session_id is None:
