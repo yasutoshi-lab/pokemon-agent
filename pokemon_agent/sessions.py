@@ -84,6 +84,11 @@ class GameSessionManager:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def frames_dir(self, sid: str) -> Path:
+        d = self._dir(sid) / "frames"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     # --- persistence ---
     def save(self, gs: GameSession) -> GameSession:
         gs.updated_at = _now_iso()

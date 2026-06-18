@@ -30,9 +30,13 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
+
+from .sessions import GameSessionManager
 
 # What Hermes is told once at the start of the session, then nudged each turn.
 TURN_NUDGE = """You are playing Pokémon Red live on the Hermes Plays Pokémon dashboard.
@@ -74,6 +78,26 @@ your first turn as described below.
 """
 
 
+def _is_stuck(state: Dict[str, Any]) -> bool:
+    """Return True when no walkable cell exists outside the player's own cell (E5)."""
+    walkable = (state.get("collision") or {}).get("walkable")
+    if not walkable:
+        return False
+    for r, row in enumerate(walkable):
+        for c, cell in enumerate(row):
+            if (r, c) != (4, 4) and cell:
+                return False
+    return True
+
+
+def _extract_state_after(events: list) -> Optional[Dict[str, Any]]:
+    """Return state_after from the last action event in the turn's event list."""
+    for ev in reversed(events):
+        if ev.get("type") == "action" and "state_after" in ev:
+            return ev["state_after"]
+    return None
+
+
 def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
     p = state.get("player", {}) or {}
     party = []
@@ -103,13 +127,15 @@ def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
 class HermesDriver:
     def __init__(self, server: str, model: Optional[str], provider: Optional[str],
                  turn_delay: float = 1.5, save_every: int = 20,
-                 turn_timeout: int = 240):
+                 turn_timeout: int = 240, data_dir: str = "~/.pokemon-agent"):
         self.server = server.rstrip("/")
         self.model = model
         self.provider = provider
         self.turn_delay = turn_delay
         self.save_every = save_every
         self.turn_timeout = turn_timeout
+        self.data_dir = data_dir
+        self._session_mgr = GameSessionManager(data_dir)
         self.game_id: Optional[str] = None        # active game session id
         self.session_id: Optional[str] = None     # bound Hermes session id
         self.turn = 0
@@ -150,6 +176,45 @@ class HermesDriver:
         except Exception:
             pass
 
+    def _fetch_turn_events(self) -> list:
+        """Drain the server's per-turn event buffer."""
+        try:
+            return self._get("/turn/events").json().get("events", [])
+        except Exception as e:
+            print(f"[driver] failed to fetch turn events: {e}", file=sys.stderr)
+            return []
+
+    def _save_frame(self, state_before: Dict[str, Any], img_bytes: Optional[bytes],
+                    hermes_output: Optional[str] = None,
+                    hermes_input: Optional[str] = None,
+                    quality: str = "ok",
+                    events: Optional[list] = None,
+                    state_after: Optional[Dict[str, Any]] = None) -> None:
+        if not self.game_id:
+            return
+        try:
+            frames = self._session_mgr.frames_dir(self.game_id)
+            turn_num = self.turn + 1
+            stem = f"turn_{turn_num:04d}"
+            if img_bytes is not None:
+                (frames / f"{stem}.png").write_bytes(img_bytes)
+            record = {
+                "turn": turn_num,
+                "session_id": self.game_id,
+                "hermes_session_id": self.session_id,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "quality": quality,
+                "hermes_input": hermes_input,
+                "hermes_input_image": f"{stem}.png" if img_bytes is not None else None,
+                "hermes_output": hermes_output,
+                "events": events or [],
+                "state_before": state_before,
+                "state_after": state_after,
+            }
+            (frames / f"{stem}.json").write_text(json.dumps(record, indent=2))
+        except Exception as e:
+            print(f"[driver] frame save failed: {e}", file=sys.stderr)
+
     def bind_hermes(self):
         if self.game_id and self.session_id:
             try:
@@ -172,8 +237,12 @@ class HermesDriver:
                          if (state.get("battle") or {}).get("in_battle")
                          else "(no map available)")
 
+        # Flush any leftover events from the previous turn before this one starts.
+        self._fetch_turn_events()
+
         # Grab the grid screenshot to a temp file for --image.
         img_path = "/tmp/pokemon_turn_grid.png"
+        shot: Optional[bytes] = None
         try:
             shot = self._get("/screenshot/grid?scale=3").content
             with open(img_path, "wb") as f:
@@ -209,12 +278,26 @@ class HermesDriver:
         except subprocess.TimeoutExpired:
             print("[driver] hermes turn timed out", file=sys.stderr)
             self.event(type="alert", text="Turn timed out — retrying.")
+            turn_events = self._fetch_turn_events()
+            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt,
+                             quality="timeout", events=turn_events,
+                             state_after=_extract_state_after(turn_events))
             return
         except Exception as e:
             print(f"[driver] hermes invocation failed: {e}", file=sys.stderr)
             self.event(type="alert", text=f"Driver error: {e}")
+            turn_events = self._fetch_turn_events()
+            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt,
+                             quality="error", events=turn_events,
+                             state_after=_extract_state_after(turn_events))
             time.sleep(3)
             return
+
+        turn_events = self._fetch_turn_events()
+        quality = "error" if not stdout else ("stuck" if _is_stuck(state) else "ok")
+        self._save_frame(state, shot, hermes_output=stdout, hermes_input=prompt,
+                         quality=quality, events=turn_events,
+                         state_after=_extract_state_after(turn_events))
 
         # Capture the session id from the first run so later turns resume it.
         if self.session_id is None:
@@ -264,7 +347,7 @@ class HermesDriver:
 
 
 def run_autopilot(server: str = "http://localhost:8765", model: Optional[str] = None,
-                  turn_delay: float = 1.5):
+                  turn_delay: float = 1.5, data_dir: str = "~/.pokemon-agent"):
     model = model or os.environ.get("POKEMON_HERMES_MODEL")
     provider = os.environ.get("POKEMON_HERMES_PROVIDER")
-    HermesDriver(server, model, provider, turn_delay=turn_delay).run()
+    HermesDriver(server, model, provider, turn_delay=turn_delay, data_dir=data_dir).run()

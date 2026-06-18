@@ -116,6 +116,11 @@ from collections import deque
 _event_history: deque = deque(maxlen=200)
 _REPLAYABLE = {"reasoning", "decision", "thought", "key_moment", "moment", "alert", "battle", "action"}
 
+# Per-turn event accumulator for frame recording.
+# Populated by /event and /action; drained by GET /turn/events.
+# asyncio single-thread guarantees safe append without a Lock.
+_turn_events: list = []
+
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
@@ -501,6 +506,7 @@ async def push_event(req: EventRequest):
             and _active_session is not None and _session_mgr is not None:
         _session_mgr.add_milestone(_active_session, req.description,
                                    req.category or "milestone")
+    _turn_events.append({**event, "ts": time.time()})
     await broadcast(event)
     return {"success": True, "broadcast_to": len(_ws_clients)}
 
@@ -685,6 +691,13 @@ async def execute_actions(req: ActionRequest):
             executed += 1
 
         state_after = await _run_sync(_get_state_dict)
+        _turn_events.append({
+            "type": "action",
+            "actions": req.actions,
+            "actions_executed": executed,
+            "state_after": state_after,
+            "ts": time.time(),
+        })
 
         # Bump per-session stats.
         if _active_session is not None and _session_mgr is not None:
@@ -722,6 +735,20 @@ async def execute_actions(req: ActionRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Action error: {e}")
+
+
+@app.get("/turn/events")
+async def get_turn_events():
+    """Drain the per-turn event accumulator and return its contents.
+
+    Called by the autopilot at the end of every Hermes turn to collect the
+    reasoning/decision/action chain for frame recording. Clears the buffer
+    so the next turn starts clean.
+    """
+    global _turn_events
+    events = list(_turn_events)
+    _turn_events = []
+    return {"events": events}
 
 
 @app.post("/save")
