@@ -34,3 +34,8 @@ saves/
 
 # Environment
 .env
+
+# Add
+log/
+CLAUDE.md
+AGENTS.md
