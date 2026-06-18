@@ -30,9 +30,13 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
+
+from .sessions import GameSessionManager
 
 # What Hermes is told once at the start of the session, then nudged each turn.
 TURN_NUDGE = """You are playing Pokémon Red live on the Hermes Plays Pokémon dashboard.
@@ -103,13 +107,15 @@ def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
 class HermesDriver:
     def __init__(self, server: str, model: Optional[str], provider: Optional[str],
                  turn_delay: float = 1.5, save_every: int = 20,
-                 turn_timeout: int = 240):
+                 turn_timeout: int = 240, data_dir: str = "~/.pokemon-agent"):
         self.server = server.rstrip("/")
         self.model = model
         self.provider = provider
         self.turn_delay = turn_delay
         self.save_every = save_every
         self.turn_timeout = turn_timeout
+        self.data_dir = data_dir
+        self._session_mgr = GameSessionManager(data_dir)
         self.game_id: Optional[str] = None        # active game session id
         self.session_id: Optional[str] = None     # bound Hermes session id
         self.turn = 0
@@ -150,6 +156,26 @@ class HermesDriver:
         except Exception:
             pass
 
+    def _save_frame(self, state: Dict[str, Any], img_bytes: Optional[bytes]) -> None:
+        if not self.game_id:
+            return
+        try:
+            frames = self._session_mgr.frames_dir(self.game_id)
+            turn_num = self.turn + 1
+            stem = f"turn_{turn_num:04d}"
+            if img_bytes is not None:
+                (frames / f"{stem}.png").write_bytes(img_bytes)
+            record = {
+                "turn": turn_num,
+                "session_id": self.game_id,
+                "hermes_session_id": self.session_id,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "state": state,
+            }
+            (frames / f"{stem}.json").write_text(json.dumps(record, indent=2))
+        except Exception as e:
+            print(f"[driver] frame save failed: {e}", file=sys.stderr)
+
     def bind_hermes(self):
         if self.game_id and self.session_id:
             try:
@@ -174,6 +200,7 @@ class HermesDriver:
 
         # Grab the grid screenshot to a temp file for --image.
         img_path = "/tmp/pokemon_turn_grid.png"
+        shot: Optional[bytes] = None
         try:
             shot = self._get("/screenshot/grid?scale=3").content
             with open(img_path, "wb") as f:
@@ -181,6 +208,8 @@ class HermesDriver:
             have_img = True
         except Exception:
             have_img = False
+
+        self._save_frame(state, shot)
 
         prompt = TURN_NUDGE.format(
             server=self.server,
@@ -264,7 +293,7 @@ class HermesDriver:
 
 
 def run_autopilot(server: str = "http://localhost:8765", model: Optional[str] = None,
-                  turn_delay: float = 1.5):
+                  turn_delay: float = 1.5, data_dir: str = "~/.pokemon-agent"):
     model = model or os.environ.get("POKEMON_HERMES_MODEL")
     provider = os.environ.get("POKEMON_HERMES_PROVIDER")
-    HermesDriver(server, model, provider, turn_delay=turn_delay).run()
+    HermesDriver(server, model, provider, turn_delay=turn_delay, data_dir=data_dir).run()
