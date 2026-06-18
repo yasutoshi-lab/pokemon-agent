@@ -179,7 +179,7 @@ async def broadcast(event: dict):
 
     dead: list[WebSocket] = []
     payload = json.dumps(event)
-    for ws in _ws_clients:
+    for ws in list(_ws_clients):
         try:
             await ws.send_text(payload)
         except Exception:
