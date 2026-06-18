@@ -78,6 +78,26 @@ your first turn as described below.
 """
 
 
+def _is_stuck(state: Dict[str, Any]) -> bool:
+    """Return True when no walkable cell exists outside the player's own cell (E5)."""
+    walkable = (state.get("collision") or {}).get("walkable")
+    if not walkable:
+        return False
+    for r, row in enumerate(walkable):
+        for c, cell in enumerate(row):
+            if (r, c) != (4, 4) and cell:
+                return False
+    return True
+
+
+def _extract_state_after(events: list) -> Optional[Dict[str, Any]]:
+    """Return state_after from the last action event in the turn's event list."""
+    for ev in reversed(events):
+        if ev.get("type") == "action" and "state_after" in ev:
+            return ev["state_after"]
+    return None
+
+
 def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
     p = state.get("player", {}) or {}
     party = []
@@ -156,9 +176,20 @@ class HermesDriver:
         except Exception:
             pass
 
-    def _save_frame(self, state: Dict[str, Any], img_bytes: Optional[bytes],
+    def _fetch_turn_events(self) -> list:
+        """Drain the server's per-turn event buffer."""
+        try:
+            return self._get("/turn/events").json().get("events", [])
+        except Exception as e:
+            print(f"[driver] failed to fetch turn events: {e}", file=sys.stderr)
+            return []
+
+    def _save_frame(self, state_before: Dict[str, Any], img_bytes: Optional[bytes],
                     hermes_output: Optional[str] = None,
-                    hermes_input: Optional[str] = None) -> None:
+                    hermes_input: Optional[str] = None,
+                    quality: str = "ok",
+                    events: Optional[list] = None,
+                    state_after: Optional[Dict[str, Any]] = None) -> None:
         if not self.game_id:
             return
         try:
@@ -172,10 +203,13 @@ class HermesDriver:
                 "session_id": self.game_id,
                 "hermes_session_id": self.session_id,
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "quality": quality,
                 "hermes_input": hermes_input,
                 "hermes_input_image": f"{stem}.png" if img_bytes is not None else None,
                 "hermes_output": hermes_output,
-                "state": state,
+                "events": events or [],
+                "state_before": state_before,
+                "state_after": state_after,
             }
             (frames / f"{stem}.json").write_text(json.dumps(record, indent=2))
         except Exception as e:
@@ -202,6 +236,9 @@ class HermesDriver:
             ascii_map = ("(in battle — no overworld map this turn)"
                          if (state.get("battle") or {}).get("in_battle")
                          else "(no map available)")
+
+        # Flush any leftover events from the previous turn before this one starts.
+        self._fetch_turn_events()
 
         # Grab the grid screenshot to a temp file for --image.
         img_path = "/tmp/pokemon_turn_grid.png"
@@ -241,16 +278,26 @@ class HermesDriver:
         except subprocess.TimeoutExpired:
             print("[driver] hermes turn timed out", file=sys.stderr)
             self.event(type="alert", text="Turn timed out — retrying.")
-            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt)
+            turn_events = self._fetch_turn_events()
+            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt,
+                             quality="timeout", events=turn_events,
+                             state_after=_extract_state_after(turn_events))
             return
         except Exception as e:
             print(f"[driver] hermes invocation failed: {e}", file=sys.stderr)
             self.event(type="alert", text=f"Driver error: {e}")
-            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt)
+            turn_events = self._fetch_turn_events()
+            self._save_frame(state, shot, hermes_output=None, hermes_input=prompt,
+                             quality="error", events=turn_events,
+                             state_after=_extract_state_after(turn_events))
             time.sleep(3)
             return
 
-        self._save_frame(state, shot, hermes_output=stdout, hermes_input=prompt)
+        turn_events = self._fetch_turn_events()
+        quality = "error" if not stdout else ("stuck" if _is_stuck(state) else "ok")
+        self._save_frame(state, shot, hermes_output=stdout, hermes_input=prompt,
+                         quality=quality, events=turn_events,
+                         state_after=_extract_state_after(turn_events))
 
         # Capture the session id from the first run so later turns resume it.
         if self.session_id is None:
