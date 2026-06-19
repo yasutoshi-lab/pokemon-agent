@@ -333,23 +333,22 @@ class HermesDriver:
                   f"stdout={len(stdout)}B stderr={len(stderr)}B", file=sys.stderr)
             sys.stderr.flush()
         except subprocess.TimeoutExpired as te:
-            print(f"[driver] turn {self.turn + 1}: timed out after {self.turn_timeout}s "
-                  "— terminating hermes", file=sys.stderr)
+            print(f"[driver] turn {self.turn + 1}: timed out after {self.turn_timeout}s",
+                  file=sys.stderr)
             sys.stderr.flush()
-            # Terminate gracefully so hermes can flush the session_id banner to stderr.
-            te.process.terminate()
-            extra_stdout, extra_stderr = "", ""
-            try:
-                extra_stdout, extra_stderr = te.process.communicate(timeout=15)
-            except subprocess.TimeoutExpired:
-                te.process.kill()
-                extra_stdout, extra_stderr = te.process.communicate()
-            print(f"[driver] hermes terminated: post-kill stdout={len(extra_stdout)}B "
+            # subprocess.run() kills the child and populates te.stdout/te.stderr before raising.
+            extra_stdout = te.stdout or ""
+            extra_stderr = te.stderr or ""
+            if isinstance(extra_stdout, bytes):
+                extra_stdout = extra_stdout.decode("utf-8", errors="replace")
+            if isinstance(extra_stderr, bytes):
+                extra_stderr = extra_stderr.decode("utf-8", errors="replace")
+            print(f"[driver] post-timeout output: stdout={len(extra_stdout)}B "
                   f"stderr={len(extra_stderr)}B", file=sys.stderr)
             sys.stderr.flush()
             self.event(type="alert", text="Turn timed out — retrying.")
             if self.session_id is None:
-                combined = (extra_stdout or "") + "\n" + (extra_stderr or "")
+                combined = extra_stdout + "\n" + extra_stderr
                 if not self._capture_session_from_output(combined):
                     self._capture_session_from_list()
             turn_events = self._fetch_turn_events()
