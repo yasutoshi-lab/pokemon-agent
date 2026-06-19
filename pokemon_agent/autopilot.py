@@ -286,13 +286,25 @@ class HermesDriver:
             out = subprocess.run(cmd, capture_output=True, text=True,
                                  timeout=self.turn_timeout)
             stdout = out.stdout or ""
-        except subprocess.TimeoutExpired:
+            stderr = out.stderr or ""
+        except subprocess.TimeoutExpired as te:
             print("[driver] hermes turn timed out", file=sys.stderr)
             self.event(type="alert", text="Turn timed out — retrying.")
+            # Try to capture session_id from partial output before returning.
+            if self.session_id is None:
+                partial = (te.stdout or "") + "\n" + (te.stderr or "")
+                m = re.search(r"hermes --resume (\S+)", partial) or \
+                    re.search(r"Session:\s*(\S+)", partial) or \
+                    re.search(r"session_id:\s*(\S+)", partial)
+                if m:
+                    self.session_id = m.group(1)
+                    print(f"[driver] Hermes session (from timeout): {self.session_id}")
+                    self.bind_hermes()
             turn_events = self._fetch_turn_events()
             self._save_frame(state, shot, hermes_output=None, hermes_input=prompt,
                              quality="timeout", events=turn_events,
                              state_after=_extract_state_after(turn_events))
+            self.turn += 1
             return
         except Exception as e:
             print(f"[driver] hermes invocation failed: {e}", file=sys.stderr)
@@ -311,10 +323,12 @@ class HermesDriver:
                          state_after=_extract_state_after(turn_events))
 
         # Capture the session id from the first run so later turns resume it.
+        # Session ID appears in stderr (hermes banner output), not stdout.
         if self.session_id is None:
-            m = re.search(r"hermes --resume (\S+)", stdout) or \
-                re.search(r"Session:\s*(\S+)", stdout) or \
-                re.search(r"session_id:\s*(\S+)", stdout)
+            combined = stdout + "\n" + stderr
+            m = re.search(r"hermes --resume (\S+)", combined) or \
+                re.search(r"Session:\s*(\S+)", combined) or \
+                re.search(r"session_id:\s*(\S+)", combined)
             if m:
                 self.session_id = m.group(1)
                 print(f"[driver] Hermes session: {self.session_id}")
