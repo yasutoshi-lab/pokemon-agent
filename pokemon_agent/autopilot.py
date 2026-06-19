@@ -151,6 +151,34 @@ class HermesDriver:
         self.session_id: Optional[str] = None     # bound Hermes session id
         self.turn = 0
 
+    # --- session id helpers ---
+    def _capture_session_from_output(self, text: str) -> bool:
+        """Try to extract session id from hermes stdout/stderr text. Returns True on success."""
+        m = re.search(r"hermes --resume (\S+)", text) or \
+            re.search(r"Session:\s*(\S+)", text) or \
+            re.search(r"session_id:\s*(\S+)", text)
+        if m:
+            self.session_id = m.group(1)
+            print(f"[driver] Hermes session: {self.session_id}")
+            self.bind_hermes()
+            return True
+        return False
+
+    def _capture_session_from_list(self) -> None:
+        """Fallback: query `hermes sessions list` to find the most recently created session."""
+        try:
+            r = subprocess.run(["hermes", "sessions", "list", "--limit", "1"],
+                               capture_output=True, text=True, timeout=10)
+            for line in r.stdout.strip().splitlines():
+                parts = line.split()
+                if parts and re.match(r"^\d{8}_\d{6}_\w+$", parts[-1]):
+                    self.session_id = parts[-1]
+                    print(f"[driver] Hermes session (from sessions list): {self.session_id}")
+                    self.bind_hermes()
+                    return
+        except Exception as e:
+            print(f"[driver] sessions list fallback failed: {e}", file=sys.stderr)
+
     # --- server helpers ---
     def _get(self, path: str):
         return requests.get(self.server + path, timeout=15)
@@ -290,16 +318,10 @@ class HermesDriver:
         except subprocess.TimeoutExpired as te:
             print("[driver] hermes turn timed out", file=sys.stderr)
             self.event(type="alert", text="Turn timed out — retrying.")
-            # Try to capture session_id from partial output before returning.
+            # session_id is printed at process exit, so partial output won't
+            # contain it on timeout. Fall back to querying hermes sessions list.
             if self.session_id is None:
-                partial = (te.stdout or "") + "\n" + (te.stderr or "")
-                m = re.search(r"hermes --resume (\S+)", partial) or \
-                    re.search(r"Session:\s*(\S+)", partial) or \
-                    re.search(r"session_id:\s*(\S+)", partial)
-                if m:
-                    self.session_id = m.group(1)
-                    print(f"[driver] Hermes session (from timeout): {self.session_id}")
-                    self.bind_hermes()
+                self._capture_session_from_list()
             turn_events = self._fetch_turn_events()
             self._save_frame(state, shot, hermes_output=None, hermes_input=prompt,
                              quality="timeout", events=turn_events,
@@ -323,16 +345,11 @@ class HermesDriver:
                          state_after=_extract_state_after(turn_events))
 
         # Capture the session id from the first run so later turns resume it.
-        # Session ID appears in stderr (hermes banner output), not stdout.
+        # session_id appears in stderr (hermes banner) after process exits.
         if self.session_id is None:
-            combined = stdout + "\n" + stderr
-            m = re.search(r"hermes --resume (\S+)", combined) or \
-                re.search(r"Session:\s*(\S+)", combined) or \
-                re.search(r"session_id:\s*(\S+)", combined)
-            if m:
-                self.session_id = m.group(1)
-                print(f"[driver] Hermes session: {self.session_id}")
-                self.bind_hermes()   # persist brain id into the game manifest
+            if not self._capture_session_from_output(stdout + "\n" + stderr):
+                self._capture_session_from_list()
+            if self.session_id:
                 self.event(type="key_moment",
                            description="Hermes session started",
                            category="milestone")
