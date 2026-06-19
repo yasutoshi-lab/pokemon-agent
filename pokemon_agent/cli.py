@@ -96,7 +96,7 @@ def cmd_play(args):
     from pokemon_agent.autopilot import run_autopilot
     server = f"http://{args.host}:{args.port}"
     run_autopilot(server=server, model=args.model, turn_delay=args.turn_delay,
-                  data_dir=args.data_dir)
+                  turn_timeout=args.turn_timeout, data_dir=args.data_dir)
 
 
 def main():
@@ -139,6 +139,8 @@ def main():
                         help="LLM model (default: $POKEMON_LLM_MODEL or anthropic/claude-sonnet-4.5)")
     play_p.add_argument("--turn-delay", type=float, default=1.5,
                         help="Seconds between turns (default: 1.5)")
+    play_p.add_argument("--turn-timeout", type=int, default=None,
+                        help="Max seconds per hermes turn (default: $POKEMON_HERMES_TIMEOUT or 480)")
     play_p.add_argument(
         "--data-dir", default="~/.pokemon-agent",
         help="Data directory for game sessions (default: ~/.pokemon-agent)",
