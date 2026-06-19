@@ -418,7 +418,12 @@ class HermesDriver:
 
 
 def run_autopilot(server: str = "http://localhost:8765", model: Optional[str] = None,
-                  turn_delay: float = 1.5, data_dir: str = "~/.pokemon-agent"):
+                  turn_delay: float = 1.5, turn_timeout: Optional[int] = None,
+                  data_dir: str = "~/.pokemon-agent"):
     model = model or os.environ.get("POKEMON_HERMES_MODEL")
     provider = os.environ.get("POKEMON_HERMES_PROVIDER")
-    HermesDriver(server, model, provider, turn_delay=turn_delay, data_dir=data_dir).run()
+    if turn_timeout is None:
+        env_val = os.environ.get("POKEMON_HERMES_TIMEOUT")
+        turn_timeout = int(env_val) if env_val else 480
+    HermesDriver(server, model, provider, turn_delay=turn_delay,
+                 turn_timeout=turn_timeout, data_dir=data_dir).run()
