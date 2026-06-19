@@ -18,12 +18,13 @@ context across the whole playthrough — it is "running through a session."
 The loop is gated by the server's /control state (Start/Pause/Stop buttons).
 
 Config (env, optional):
-  POKEMON_HERMES_MODEL          model override passed to `hermes chat -m`
-  POKEMON_HERMES_PROVIDER       provider override passed to `hermes chat --provider`
-  POKEMON_HERMES_DISABLE_IMAGE  set to "1" to never pass --image to hermes
-                                (auto-enabled when provider=ollama, because Ollama's
-                                OpenAI-compatible API does not correctly forward images
-                                for GGUF multimodal models such as mistral3)
+  POKEMON_HERMES_MODEL            model override passed to `hermes chat -m`
+  POKEMON_HERMES_PROVIDER         provider override passed to `hermes chat --provider`
+  POKEMON_HERMES_DISABLE_IMAGE    set to "1" to never pass --image to hermes
+                                  (auto-enabled when provider=ollama unless the model
+                                  is in the vision allowlist)
+  POKEMON_HERMES_VISION_ALLOWLIST comma-separated model name prefixes to add to the
+                                  built-in Ollama vision allowlist (e.g. "llava,moondream")
 """
 
 from __future__ import annotations
@@ -41,6 +42,22 @@ from typing import Any, Dict, Optional
 import requests
 
 from .sessions import GameSessionManager
+
+# Model name prefixes (lowercase) known to correctly handle image input via Ollama's
+# OpenAI-compatible API. Verified by direct API test: the model receives and describes
+# the image without producing garbled special-token output.
+# mistral3 is explicitly excluded — it produces broken output with image input via Ollama.
+OLLAMA_VISION_ALLOWLIST: frozenset[str] = frozenset({"gemma4"})
+
+
+def _ollama_model_supports_vision(model: str) -> bool:
+    """Return True if model is in the Ollama vision allowlist (built-in + env override)."""
+    extra = {p.strip().lower() for p in
+             os.environ.get("POKEMON_HERMES_VISION_ALLOWLIST", "").split(",") if p.strip()}
+    allowlist = OLLAMA_VISION_ALLOWLIST | extra
+    base = model.split(":")[0].lower()
+    return any(base.startswith(prefix) for prefix in allowlist)
+
 
 # What Hermes is told once at the start of the session, then nudged each turn.
 TURN_NUDGE = """You are playing Pokémon Red live on the Hermes Plays Pokémon dashboard.
@@ -148,10 +165,16 @@ class HermesDriver:
         self.save_every = save_every
         self.turn_timeout = turn_timeout
         self.data_dir = data_dir
-        # Disable --image when the provider is ollama (Ollama's OpenAI-compatible API
-        # does not correctly forward images for GGUF multimodal models) or when
-        # explicitly requested via env/arg.
-        self.disable_image = disable_image or (provider == "ollama")
+        # Disable --image when the provider is ollama AND the model is not in the vision
+        # allowlist, or when explicitly forced via env/arg.
+        # Ollama's OpenAI-compatible API forwards images incorrectly for some GGUF
+        # multimodal models (e.g. mistral3 produces garbled special-token output), but
+        # works correctly for others (e.g. gemma4).
+        ollama_no_vision = (
+            provider == "ollama" and
+            not _ollama_model_supports_vision(model or "")
+        )
+        self.disable_image = disable_image or ollama_no_vision
         self._session_mgr = GameSessionManager(data_dir)
         self.game_id: Optional[str] = None        # active game session id
         self.session_id: Optional[str] = None     # bound Hermes session id
