@@ -18,8 +18,12 @@ context across the whole playthrough — it is "running through a session."
 The loop is gated by the server's /control state (Start/Pause/Stop buttons).
 
 Config (env, optional):
-  POKEMON_HERMES_MODEL     model override passed to `hermes chat -m`
-  POKEMON_HERMES_PROVIDER  provider override passed to `hermes chat --provider`
+  POKEMON_HERMES_MODEL          model override passed to `hermes chat -m`
+  POKEMON_HERMES_PROVIDER       provider override passed to `hermes chat --provider`
+  POKEMON_HERMES_DISABLE_IMAGE  set to "1" to never pass --image to hermes
+                                (auto-enabled when provider=ollama, because Ollama's
+                                OpenAI-compatible API does not correctly forward images
+                                for GGUF multimodal models such as mistral3)
 """
 
 from __future__ import annotations
@@ -44,8 +48,7 @@ TURN_NUDGE = """You are playing Pokémon Red live on the Hermes Plays Pokémon d
 The game server is at {server}. Take ONE short turn now, then stop and reply.
 
 This turn:
-1. Look at the attached grid screenshot (A1..J9 cells, you are the player at
-   E5; the labelled grid + green/red walkability tint is drawn on it).
+1. {vision_instruction}
 2. Use the game state and the ASCII walkability map below to decide a move.
    `.` = walkable, `#` = blocked, `@` = you (E5). Count cells from E5:
    up=row-1, down=row+1, left=col-1, right=col+1. NEVER route through `#`.
@@ -61,9 +64,8 @@ This turn:
 4. Keep it to 2-4 game actions this turn — you'll get another turn next.
 
 TEXT WINDOW / DIALOG HANDLING (do this FIRST every turn):
-- If a text window / dialog box is on screen (look at the screenshot, and check
-  `dialog_active` in CURRENT STATE), the game is waiting for you — you CANNOT
-  walk. Read the text, then advance it with `press_a`.
+- If a text window / dialog box is on screen (check `dialog_active` in CURRENT STATE),
+  the game is waiting for you — you CANNOT walk. Advance it with `press_a`.
 - Send `press_a` repeatedly (e.g. {{"actions":["press_a","press_a","press_a"]}})
   until the text window is fully closed (`dialog_active` is false). Only then
   resume walking.
@@ -71,8 +73,7 @@ TEXT WINDOW / DIALOG HANDLING (do this FIRST every turn):
   scripted events. Do NOT try to walk while a text window is open — it does
   nothing and wastes the turn.
 
-Reserve vision (the screenshot) for identifying WHAT things are (doors, signs,
-NPCs, the Mart's blue roof). Use the ASCII map for WHERE you can walk.
+Use the ASCII map for WHERE you can walk — it is the authoritative navigation source.
 
 CURRENT STATE:
 {state}
@@ -138,7 +139,8 @@ def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
 class HermesDriver:
     def __init__(self, server: str, model: Optional[str], provider: Optional[str],
                  turn_delay: float = 1.5, save_every: int = 20,
-                 turn_timeout: int = 480, data_dir: str = "~/.pokemon-agent"):
+                 turn_timeout: int = 480, data_dir: str = "~/.pokemon-agent",
+                 disable_image: bool = False):
         self.server = server.rstrip("/")
         self.model = model
         self.provider = provider
@@ -146,6 +148,10 @@ class HermesDriver:
         self.save_every = save_every
         self.turn_timeout = turn_timeout
         self.data_dir = data_dir
+        # Disable --image when the provider is ollama (Ollama's OpenAI-compatible API
+        # does not correctly forward images for GGUF multimodal models) or when
+        # explicitly requested via env/arg.
+        self.disable_image = disable_image or (provider == "ollama")
         self._session_mgr = GameSessionManager(data_dir)
         self.game_id: Optional[str] = None        # active game session id
         self.session_id: Optional[str] = None     # bound Hermes session id
@@ -290,7 +296,8 @@ class HermesDriver:
         # Flush any leftover events from the previous turn before this one starts.
         self._fetch_turn_events()
 
-        # Grab the grid screenshot to a temp file for --image.
+        # Grab the grid screenshot (always save for frame records; only pass to hermes
+        # when image input is not disabled).
         img_path = "/tmp/pokemon_turn_grid.png"
         shot: Optional[bytes] = None
         try:
@@ -301,10 +308,24 @@ class HermesDriver:
         except Exception:
             have_img = False
 
+        use_img = have_img and not self.disable_image
+        if use_img:
+            vision_instruction = (
+                "Look at the attached grid screenshot (A1..J9 cells, you are the player at"
+                " E5; the labelled grid + green/red walkability tint is drawn on it)."
+                " Use it to identify WHAT things are (doors, signs, NPCs, buildings)."
+            )
+        else:
+            vision_instruction = (
+                "No screenshot is available this turn — rely entirely on the ASCII"
+                " walkability map and CURRENT STATE below to decide your move."
+            )
+
         prompt = TURN_NUDGE.format(
             server=self.server,
             state=json.dumps(_compact_state(state), indent=2),
             ascii_map=ascii_map,
+            vision_instruction=vision_instruction,
         )
         if self.session_id is None:
             prompt = FIRST_TURN_PREFIX.format(server=self.server) + prompt
@@ -317,7 +338,7 @@ class HermesDriver:
             cmd += ["-m", self.model]
         if self.provider:
             cmd += ["--provider", self.provider]
-        if have_img:
+        if use_img:
             cmd += ["--image", img_path]
         cmd += ["-q", prompt]
 
@@ -425,5 +446,7 @@ def run_autopilot(server: str = "http://localhost:8765", model: Optional[str] = 
     if turn_timeout is None:
         env_val = os.environ.get("POKEMON_HERMES_TIMEOUT")
         turn_timeout = int(env_val) if env_val else 480
+    disable_image = os.environ.get("POKEMON_HERMES_DISABLE_IMAGE", "").strip() == "1"
     HermesDriver(server, model, provider, turn_delay=turn_delay,
-                 turn_timeout=turn_timeout, data_dir=data_dir).run()
+                 turn_timeout=turn_timeout, data_dir=data_dir,
+                 disable_image=disable_image).run()
