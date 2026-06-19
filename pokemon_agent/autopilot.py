@@ -334,9 +334,15 @@ class HermesDriver:
         use_img = have_img and not self.disable_image
         if use_img:
             vision_instruction = (
-                "Look at the attached grid screenshot (A1..J9 cells, you are the player at"
-                " E5; the labelled grid + green/red walkability tint is drawn on it)."
-                " Use it to identify WHAT things are (doors, signs, NPCs, buildings)."
+                "LOOK AT THE SCREENSHOT CAREFULLY before deciding anything.\n"
+                "   The grid screenshot shows A1..J9 cells with a green/red walkability tint.\n"
+                "   You (the player) are always at cell E5.\n"
+                "   Examine the image and answer these questions in your reasoning:\n"
+                "     - Is there a text/dialog box open? (if yes → press_a first, do NOT walk)\n"
+                "     - What is visible around you? (NPCs, signs, buildings, doors, items)\n"
+                "     - Are there any obstacles or points of interest near E5?\n"
+                "   Use the screenshot to understand WHAT things are (buildings, NPCs, etc.).\n"
+                "   Use the ASCII walkability map below to decide WHERE you can move."
             )
         else:
             vision_instruction = (
